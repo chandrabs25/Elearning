@@ -52,19 +52,19 @@ const animations = {
         initial: { opacity: 0, scale: 0.9 },
         animate: { opacity: 1, scale: 1 },
         exit: { opacity: 0, scale: 0.9 },
-        transition: { duration: 0.5, type: "spring", bounce: 0.3 },
+        transition: { duration: 0.5, type: "spring" as const, bounce: 0.3 },
     },
     slideInLeft: {
         initial: { opacity: 0, x: -100 },
         animate: { opacity: 1, x: 0 },
         exit: { opacity: 0, x: -100 },
-        transition: { duration: 0.5, type: "spring", bounce: 0.2 },
+        transition: { duration: 0.5, type: "spring" as const, bounce: 0.2 },
     },
     slideInRight: {
         initial: { opacity: 0, x: 100 },
         animate: { opacity: 1, x: 0 },
         exit: { opacity: 0, x: 100 },
-        transition: { duration: 0.5, type: "spring", bounce: 0.2 },
+        transition: { duration: 0.5, type: "spring" as const, bounce: 0.2 },
     },
     pulseIn: {
         initial: { opacity: 0, scale: 0.95 },
@@ -203,8 +203,8 @@ export default function DynamicPanel({
     // For grid layout, we don't need inline width styles - grid handles it
     const widthStyle = {};
 
-    // Build props for the component
-    let componentProps = { ...panel.props, onAction };
+    // Build props for the component - use Record to allow dynamic props
+    let componentProps: Record<string, unknown> = { ...panel.props, onAction };
 
     // Special handling for ChatPanel - pass controlled props
     if (panel.type === "ChatPanel") {

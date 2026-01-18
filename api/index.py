@@ -1,8 +1,5 @@
 """
 Vercel Serverless Function Entry Point for FastAPI Backend
-
-This file serves as the entry point for Vercel's Python runtime.
-It imports and exposes the FastAPI app from the elearning-backend.
 """
 import sys
 from pathlib import Path
@@ -11,8 +8,8 @@ from pathlib import Path
 backend_path = Path(__file__).parent.parent / "elearning-backend"
 sys.path.insert(0, str(backend_path))
 
-# Import the FastAPI app
+# Import the FastAPI app - Vercel auto-detects 'app' variable
 from app.main import app
 
-# Vercel will automatically detect this as an ASGI app
-# The app variable is what Vercel looks for
+# Handler for Vercel (required for some configurations)
+handler = app
