@@ -470,4 +470,3 @@ def exercise_only_schema(
         progress=progress,
         input_placeholder="Describe your approach to solving the problem..."
     )
-

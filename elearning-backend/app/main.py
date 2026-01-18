@@ -1,6 +1,4 @@
 """E-Learning Backend - Minimal Reset"""
-import asyncio
-import httpx
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,42 +8,13 @@ from app.api import chat
 from app.api import tutor
 from app.api import converse
 
-# Background task to keep the service alive on Render free tier
-async def keep_alive_task():
-    """Ping self every 12 minutes to prevent Render free tier from sleeping"""
-    import os
-    
-    # Get the service URL from environment (Render sets RENDER_EXTERNAL_URL)
-    service_url = os.getenv("RENDER_EXTERNAL_URL", "")
-    
-    if not service_url:
-        print("⚠ RENDER_EXTERNAL_URL not set, keep-alive disabled")
-        return
-    
-    print(f"✓ Keep-alive task started, pinging {service_url}/health every 12 minutes")
-    
-    while True:
-        await asyncio.sleep(12 * 60)  # 12 minutes
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(f"{service_url}/health", timeout=10)
-                print(f"✓ Keep-alive ping: {response.status_code}")
-        except Exception as e:
-            print(f"⚠ Keep-alive ping failed: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Verify DB Connections on Start
-    await neo4j_client.verify_connectivity()
-    print("✓ Neo4j Connected")
-    
-    # Start keep-alive background task
-    keep_alive = asyncio.create_task(keep_alive_task())
-    
+    # Note: Neo4j connection is lazy - connects on first query
+    # This is necessary for Vercel serverless which doesn't support startup events well
     yield
-    
-    # Cleanup
-    keep_alive.cancel()
+    # Cleanup on shutdown (if applicable)
     await neo4j_client.close()
 
 app = FastAPI(title="E-Learning Backend", lifespan=lifespan)
@@ -67,6 +36,7 @@ if os.getenv("ALLOWED_ORIGINS"):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",  # Allow all Vercel preview deployments
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

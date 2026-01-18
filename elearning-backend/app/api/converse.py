@@ -263,16 +263,13 @@ async def chat_panel_message(req: ChatPanelRequest):
     Returns responses with rich content (math, diagrams, etc.).
     Updates mastery only for relevant chat interactions.
     """
-    from langchain_groq import ChatGroq
+    from groq import AsyncGroq
     from app.config import settings
     
     section_id = req.context.get("current_section_id")
     section_title = req.context.get("current_section_title", "Gravitation")
     
-    llm = ChatGroq(
-        model="llama-3.3-70b-versatile",
-        api_key=settings.groq_api_key
-    )
+    client = AsyncGroq(api_key=settings.groq_api_key)
     
     # Step 1: Check relevance of the user's question
     relevance = "relevant"  # default
@@ -292,8 +289,11 @@ Classify this question as ONE of:
 Reply with ONLY one word: relevant, related, or irrelevant"""
 
         try:
-            relevance_response = await llm.ainvoke(relevance_prompt)
-            relevance_text = relevance_response.content.strip().lower()
+            relevance_response = await client.chat.completions.create(
+                messages=[{"role": "user", "content": relevance_prompt}],
+                model="llama-3.3-70b-versatile"
+            )
+            relevance_text = relevance_response.choices[0].message.content.strip().lower()
             if "irrelevant" in relevance_text:
                 relevance = "irrelevant"
             elif "related" in relevance_text:
@@ -337,8 +337,11 @@ Format your response as educational content. If there are equations, include the
     messages.append({"role": "user", "content": req.message})
     
     # Call LLM for response
-    response = await llm.ainvoke(messages)
-    response_text = response.content
+    response = await client.chat.completions.create(
+        messages=messages,
+        model="llama-3.3-70b-versatile"
+    )
+    response_text = response.choices[0].message.content
     
     # Parse response for rich content
     content_items = parse_response_to_content(response_text)
@@ -656,12 +659,12 @@ async def handle_answer(user_id: str, answer: str, context: dict) -> Conversatio
 
     # 2. Handle Open-Ended Problem Solving (Quiz)
     else:
-        from langchain_groq import ChatGroq
+        from groq import AsyncGroq
         from app.config import settings
 
         solution = context.get("solution_meta") or context.get("solution_latex")
         
-        llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=settings.groq_api_key)
+        client = AsyncGroq(api_key=settings.groq_api_key)
         
         prompt = f"""
         You are a physics tutor evaluating a student's answer.
@@ -681,8 +684,11 @@ async def handle_answer(user_id: str, answer: str, context: dict) -> Conversatio
         Feedback: [Your feedback here]
         """
         
-        evaluation = await llm.ainvoke(prompt)
-        eval_text = evaluation.content
+        evaluation = await client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile"
+        )
+        eval_text = evaluation.choices[0].message.content
         
         is_correct = "Status: CORRECT" in eval_text
         is_partial = "PARTIAL" in eval_text
@@ -832,7 +838,7 @@ async def handle_quiz_request(user_id: str, message: str, user_state: dict, cont
 
 async def handle_mcq_request(user_id: str, message: str, user_state: dict, context: dict) -> ConversationResponse:
     """Handle 'generate mcq' intent using LLM."""
-    from langchain_groq import ChatGroq
+    from groq import AsyncGroq
     from app.config import settings
     import json
     
@@ -845,7 +851,7 @@ async def handle_mcq_request(user_id: str, message: str, user_state: dict, conte
     # Check if open book mode
     open_book = is_open_book_request(message)
     
-    llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=settings.groq_api_key)
+    client = AsyncGroq(api_key=settings.groq_api_key)
     
     prompt = f"""
     Generate a multiple-choice question (MCQ) for a physics student learning about: {title}.
@@ -861,8 +867,11 @@ async def handle_mcq_request(user_id: str, message: str, user_state: dict, conte
     """
     
     try:
-        response = await llm.ainvoke(prompt)
-        content = response.content.replace("```json", "").replace("```", "").strip()
+        response = await client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile"
+        )
+        content = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
         mcq_data = json.loads(content)
         
         if open_book:
@@ -996,7 +1005,7 @@ async def handle_show_exercises(user_id: str, message: str, user_state: dict, co
 
 async def handle_exercise_answer(user_id: str, answer: str, context: dict) -> ConversationResponse:
     """Handle answer to an exercise."""
-    from langchain_groq import ChatGroq
+    from groq import AsyncGroq
     from app.config import settings
     
     exercise_label = context.get("exercise_label")
@@ -1005,7 +1014,7 @@ async def handle_exercise_answer(user_id: str, answer: str, context: dict) -> Co
     is_bonus = context.get("is_bonus", True)
     
     # Use LLM to evaluate the answer
-    llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=settings.groq_api_key)
+    client = AsyncGroq(api_key=settings.groq_api_key)
     
     prompt = f"""
     You are a physics tutor evaluating a student's approach to solving a problem.
@@ -1026,8 +1035,11 @@ async def handle_exercise_answer(user_id: str, answer: str, context: dict) -> Co
     """
     
     try:
-        evaluation = await llm.ainvoke(prompt)
-        eval_text = evaluation.content
+        evaluation = await client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile"
+        )
+        eval_text = evaluation.choices[0].message.content
         
         is_correct = "Status: CORRECT" in eval_text
         is_partial = "PARTIAL" in eval_text
