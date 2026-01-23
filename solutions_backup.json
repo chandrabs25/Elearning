@@ -1,0 +1,412 @@
+{
+    "solutions": [
+        {
+            "id": "1",
+            "title": "Solution 1",
+            "content": "a. Gravitational influence of matter on nearby objects cannot be screened by any means. This is because gravitational force unlike electrical forces is independent of the nature of the material medium. Also, it is independent of the status of other objects.
+b. If the size of the space station is large enough, then the astronaut will detect the change in Earth’s gravity (g).
+c. Tidal effect depends inversely upon the cube of the distance while, gravitational force depends inversely on the square of the distance. Since the distance between the Moon and the Earth is smaller than the distance between the Sun and the Earth, the tidal effect of the Moon’s pull is greater than the tidal effect of the Sun’s pull."
+        },
+        {
+            "id": "2",
+            "title": "Solution 2",
+            "content": "a. Decreases
+b. Decreases
+c. Mass of the body
+d. More"
+        },
+        {
+            "id": "3",
+            "title": "Solution 3",
+            "content": "Lesser by a factor of 0.63
+Time taken by the Earth to complete one revolution around the Sun,
+Te = 1 year
+Orbital radius of the Earth in its orbit, Re = 1 AU
+Time taken by the planet to complete one revolution around the Sun,T P = ½T e = ½ year
+Orbital radius of the planet = Rp
+From Kepler’s third law of planetary motion, we can write:
+(R p / R e ) 3 = (T p / T e ) 2
+(R p / R e ) = (T p / T e ) 2/3
+= (½ / 1) 2/3 =  0.5 2/3 =  0.63
+Hence, the orbital radius of the planet will be 0.63 times smaller than that of the Earth."
+        },
+        {
+            "id": "4",
+            "title": "Solution 4",
+            "content": "Orbital period of  I 0 , T I0 = 1.769 days  =  1.769 × 24 × 60 × 60 s
+
+Orbital radius of  I 0 , R I 0 = 4.22 × 10 8 m Satellite I 0 is revolving around the Jupiter
+
+Mass of the latter is given by the relation: M J = 4π 2 R I0 3 / GT I0 2 .....(i)
+
+Where, M J = Mass of Jupiter G = Universal gravitational constant Orbital period of the earth,
+
+T e = 365.25 days
+
+= 365.25 × 24 × 60 × 60 s Orbital radius of the Earth,
+
+R e = 1 AU
+
+= 1.496 × 10 11 m
+
+Mass of sun is given as:
+
+M s = 4π 2 R e 3 / GT e 2 ......(ii)
+
+∴ M s / M J =  (4π 2 R e 3 /  GT e 2 )  ×  (GT I0 2 /  4π 2 R I0 3 )   =   (R e 3 ×  T I0 2 ) /  (R I0 3 × T e 2 )
+
+Substituting the values, we get: = (1.769  × 24  × 60 × 60  / 365.25  × 24 × 60 × 60) 2 × (1.496  × 10 11 /  4.22  × 10 8 ) 3
+
+= 1045.04
+
+∴ M s / M J ~  1000 s  ~  1000 × M J
+
+Hence, it can be inferred that the mass of Jupiter is about one-thousandth that of the Sun."
+        },
+        {
+            "id": "5",
+            "title": "Solution 5",
+            "content": "Mass of our galaxy Milky Way, M = 2.5 × 10 11 solar mass
+Solar mass = Mass of Sun = 2.0 × 10 36 kg
+Mass of our galaxy, M = 2.5 × 10 11 × 2 × 10 36 = 5 × 10 41 kg
+Diameter of Milky Way, d = 10 5 ly
+Radius of Milky Way, r = 5 × 10 4 ly
+1 ly = 9.46 × 10 15 m
+∴r = 5 × 10 4 × 9.46 × 10 15
+= 4.73 ×10 20 m
+Since a star revolves around the galactic centre of the Milky Way, its time period is given by the relation:
+T = ( 4π 2 r 3 / GM) 1/2
+= [ (4 × 3.14 2 × 4.73 3 × 10 60 ) / (6.67 × 10 -11 × 5 × 10 41 ) ] 1/2
+=   (39.48 × 105.82 × 10 30 / 33.35 ) 1/2
+= 1.12 × 10 16 s
+1 year = 365 × 324 × 60 × 60 s
+1s = 1 / (365 × 324 × 60 × 60)  years
+∴ 1.12 × 10 16 s = 1.12 × 10 16 / (365 × 24 × 60 × 60)  =  3.55 × 10 8 years."
+        },
+        {
+            "id": "6",
+            "title": "Solution 6",
+            "content": "a. Kinetic energy
+b. Less"
+        },
+        {
+            "id": "7",
+            "title": "Solution 7",
+            "content": "a. No
+b. No
+c. No
+d. Yes
+
+Escape velocity of a body from the Earth is given by the relation:
+g = Acceleration due to gravity
+R = Radius of the Earth
+It is clear from equation (i) that escape velocity vesc is independent of the mass of the body and the direction of its projection. However, it depends on gravitational potential at the point from where the body is launched. Since this potential marginally depends on the height of the point, escape velocity also marginally depends on these factors."
+        },
+        {
+            "id": "8",
+            "title": "Solution 8",
+            "content": " a. No
+b. No
+c. Yes
+d. No
+e. No
+f. Yes
+
+Angular momentum and total energy at all points of the orbit of a comet moving in a highly elliptical orbit around the Sun are constant. Its linear speed, angular speed, kinetic, and potential energy varies from point to point in the orbit."
+        },
+        {
+            "id": "9",
+            "title": "Solution 9",
+            "content": "a. Legs hold the entire mass of a body in standing position due to gravitational pull. In space, an astronaut feels weightlessness because of the absence of gravity. Therefore, swollen feet of an astronaut do not affect him/her in space.
+
+b. A swollen face is caused generally because of apparent weightlessness in space. Sense organs such as eyes, ears nose, and mouth constitute a person’s face. This symptom can affect an astronaut in space.
+
+c. Headaches are caused because of mental strain. It can affect the working of an astronaut in space.
+
+d. Space has different orientations. Therefore, orientational problem can affect an astronaut in space."
+        },
+        {
+            "id": "10",
+            "title": "Solution 10",
+            "content": "Gravitational potential (V) is constant at all points in a spherical shell. Hence, the gravitational potential gradient (dV/dR) is zero everywhere inside the spherical shell. The gravitational potential gradient is equal to the negative of gravitational intensity. Hence, intensity is also zero at all points inside the spherical shell. This indicates that gravitational forces acting at a point in a spherical shell are symmetric.
+If the upper half of a spherical shell is cut out (as shown in the given figure), then the net gravitational force acting on a particle located at centre O will be in the downward direction.
+Since gravitational intensity at a point is defined as the gravitational force per unit mass at that point, it will also act in the downward direction. Thus, the gravitational intensity at centre O of the given hemispherical shell has the direction as indicated by arrow c."
+        },
+        {
+            "id": "11",
+            "title": "Solution 11",
+            "content": "Gravitational potential (V) is constant at all points in a spherical shell. Hence, the gravitational potential gradient (dV/dR) is zero everywhere inside the spherical shell. The gravitational potential gradient is equal to the negative of gravitational intensity. Hence, intensity is also zero at all points inside the spherical shell. This indicates that gravitational forces acting at a point in a spherical shell are symmetric.
+If the upper half of a spherical shell is cut out (as shown in the given figure), then the net gravitational force acting on a particle at an arbitrary point P will be in the downward direction.
+
+ calss 11 chapter 8-Gravitation
+Since gravitational intensity at a point is defined as the gravitational force per unit mass at that point, it will also act in the downward direction. Thus, the gravitational intensity at an arbitrary point P of the hemispherical shell has the direction as indicated by arrow e.
+Hence, the correct answer is (ii)."
+        },
+        {
+            "id": "12",
+            "title": "Solution 12",
+            "content": "Mass of the Sun, M s = 2 × 10 30 kg Mass of the Earth, M e = 6 × 10 24 kg
+Orbital radius, r = 1.5 × 10 11 m
+Mass of the rocket = m
+Let x be the distance from the centre of the Earth where the gravitational force acting on satellite P becomes zero. From Newton’s law of gravitation, we can equate gravitational forces acting on satellite P under the influence of the Sun and the Earth as:
+GmM s / (r - x) 2 =  GmM e / x 2
+[ (r - x) / x ] 2 =  M s / M e
+(r - x) / x  =  [ 2 × 10 30 / 60 × 10 24 ] 1/2 =  577.35
+1.5 × 10 11 - x = 577.35x
+578.35x = 1.5 × 10 11
+x = 1.5 × 10 11 / 578.35  =  2.59 × 10 8 m."
+        },
+        {
+            "id": "13",
+            "title": "Solution 13",
+            "content": "Orbital radius of the Earth around the Sun, r = 1.5 × 10 11 m
+Time taken by the Earth to complete one revolution around the Sun,
+T = 1 year = 365.25 days
+= 365.25 × 24 × 60 × 60 s
+Universal gravitational constant, G = 6.67 × 10 –11 Nm 2 kg –2
+Thus, mass of the Sun can be calculated using the relation,
+M = 4π 2 r 3 / GT 2
+= 4 × 3.14 2 × (1.5 × 10 11 ) 3 / [ 6.67 × 10 -11 × (365.25 × 24 × 60 × 60) 2 ]
+= 2 × 10 30 kg
+Hence, the mass of the Sun is 2 × 10 30 kg."
+        },
+        {
+            "id": "14",
+            "title": "Solution 14",
+            "content": "Distance of the Earth from the Sun, r e = 1.5 × 10 8 km = 1.5 × 10 11 m
+Time period of the Earth = T­ e
+Time period of Saturn, T s = 29. 5 T e
+Distance of Saturn from the Sun = r s
+From Kepler’s third law of planetary motion, we have
+T = (4π 2 r 3 / GM) 1/2
+For Saturn and Sun, we can write
+r s 3 / r e 3 =  T s 2 / T e 2
+r s = r e (T s / T e ) 2/3
+= 1.5 × 10 11 (29.5 T e / T e ) 2/3
+= 1.5 × 10 11 (29.5) 2/3
+= 14.32 × 10 11 m
+Hence, the distance between Saturn and the Sun is 1.43 × 10 12 m."
+        },
+        {
+            "id": "15",
+            "title": "Solution 15",
+            "content": "Weight of the body, W = 63 N
+Acceleration due to gravity at height h from the Earth’s surface is given by the relation:
+g' = g / [1 + ( h / R e ) ] 2
+Where,
+g = Acceleration due to gravity on the Earth’s surface
+Re = Radius of the Earth
+For h = R e / 2
+g' = g / [(1 + (R e / 2R e ) ] 2
+= g / [1 + (1/2) ] 2 =  (4/9)g
+Weight of a body of mass m at height h is given as:
+W' = mg
+= m × (4/9)g  =  (4/9)mg
+= (4/9)W
+= (4/9) × 63  =  28 N."
+        },
+        {
+            "id": "16",
+            "title": "Solution 16",
+            "content": "Weight of a body of mass m at the Earth’s surface, W = mg = 250 N
+Body of mass m is located at depth, d = (1/2)R e
+Where,
+R e = Radius of the Earth
+Acceleration due to gravity at depth g (d) is given by the relation:
+g' = (1 - (d / R e )g
+= [1 - (R e / 2R e ) ]g  =  (1/2)g
+Weight of the body at depth d,
+W' = mg'
+= m × (1/2)g  =  (1/2) mg  =  (1/2)W
+= (1/2) × 250  =  125 N"
+        },
+        {
+            "id": "17",
+            "title": "Solution 17",
+            "content": "Velocity of the rocket, v = 5 km/s = 5 × 10 3 m/s
+Mass of the Earth, M e = 6 × 10 24 kg
+Radius of the Earth, R e = 6.4 × 10 6 m
+Height reached by rocket mass, m = h
+At the surface of the Earth,
+Total energy of the rocket = Kinetic energy + Potential energy
+= (1/2)mv 2 + (-GM e m / R e )
+At highest point h,
+v = 0
+And, Potential energy = -GM e m / (R e + h)
+Total energy of the rocket = 0 + [ -GM e m / (R e + h) ]
+= -GM e m / (R e + h)
+From the law of conservation of energy, we have
+Total energy of the rocket at the Earth’s surface = Total energy at height h
+(1/2)mv 2 + (-GM e m / R e ) = -GM e m / (R e + h)
+(1/2)v 2 = GM e [ (1/R e ) - 1 / (R e + h) ]
+= GM e [ (R e + h - R e )  / R e (R e + h) ]
+(1/2)v 2 = gR e h / (R e + h)
+Where g = GM / R e 2 = 9.8 ms -2
+∴ v 2 (R e + h) = 2gR e h
+v 2 R e = h(2gR e - v 2 )
+h = R e v 2 / (2gR e -  v 2 )
+= 6.4 × 10 6 × (5 × 10 3 ) 2 / [ 2 × 9.8 × 6.4 × 10 6 - (5 × 10 3 ) 2
+h = 1.6 × 10 6 m
+Height achieved by the rocket with respect to the centre of the Earth = R e + h
+= 6.4 × 10 6 + 1.6 × 10 6 =  8 × 10 6 m."
+        },
+        {
+            "id": "18",
+            "title": "Solution 18",
+            "content": "Velocity of the rocket, v = 5 km/s = 5 × 10 3 m/s
+Mass of the Earth, M e = 6 × 10 24 kg
+Radius of the Earth, R e = 6.4 × 10 6 m
+Height reached by rocket mass, m = h
+At the surface of the Earth,
+Total energy of the rocket = Kinetic energy + Potential energy
+= (1/2)mv 2 + (-GM e m / R e )
+At highest point h,
+v = 0
+And, Potential energy = -GM e m / (R e + h)
+Total energy of the rocket = 0 + [ -GM e m / (R e + h) ]
+= -GM e m / (R e + h)
+From the law of conservation of energy, we have
+Total energy of the rocket at the Earth’s surface = Total energy at height h
+(1/2)mv 2 + (-GM e m / R e ) = -GM e m / (R e + h)
+(1/2)v 2 = GM e [ (1/R e ) - 1 / (R e + h) ]
+= GM e [ (R e + h - R e )  / R e (R e + h) ]
+(1/2)v 2 = gR e h / (R e + h)
+Where g = GM / R e 2 = 9.8 ms -2
+∴ v 2 (R e + h) = 2gR e h
+v 2 R e = h(2gR e - v 2 )
+h = R e v 2 / (2gR e -  v 2 )
+= 6.4 × 10 6 × (5 × 10 3 ) 2 / [ 2 × 9.8 × 6.4 × 10 6 - (5 × 10 3 ) 2
+h = 1.6 × 10 6 m
+Height achieved by the rocket with respect to the centre of the Earth = R e + h
+= 6.4 × 10 6 + 1.6 × 10 6 =  8 × 10 6 m."
+        },
+        {
+            "id": "19",
+            "title": "Solution 19",
+            "content": "Velocity of the rocket, v = 5 km/s = 5 × 10 3 m/s
+Mass of the Earth, M e = 6 × 10 24 kg
+Radius of the Earth, R e = 6.4 × 10 6 m
+Height reached by rocket mass, m = h
+At the surface of the Earth,
+Total energy of the rocket = Kinetic energy + Potential energy
+= (1/2)mv 2 + (-GM e m / R e )
+At highest point h,
+v = 0
+And, Potential energy = -GM e m / (R e + h)
+Total energy of the rocket = 0 + [ -GM e m / (R e + h) ]
+= -GM e m / (R e + h)
+From the law of conservation of energy, we have
+Total energy of the rocket at the Earth’s surface = Total energy at height h
+(1/2)mv 2 + (-GM e m / R e ) = -GM e m / (R e + h)
+(1/2)v 2 = GM e [ (1/R e ) - 1 / (R e + h) ]
+= GM e [ (R e + h - R e )  / R e (R e + h) ]
+(1/2)v 2 = gR e h / (R e + h)
+Where g = GM / R e 2 = 9.8 ms -2
+∴ v 2 (R e + h) = 2gR e h
+v 2 R e = h(2gR e - v 2 )
+h = R e v 2 / (2gR e -  v 2 )
+= 6.4 × 10 6 × (5 × 10 3 ) 2 / [ 2 × 9.8 × 6.4 × 10 6 - (5 × 10 3 ) 2
+h = 1.6 × 10 6 m
+Height achieved by the rocket with respect to the centre of the Earth = R e + h
+= 6.4 × 10 6 + 1.6 × 10 6 =  8 × 10 6 m."
+        },
+        {
+            "id": "20",
+            "title": "Solution 20",
+            "content": "Velocity of the rocket, v = 5 km/s = 5 × 10 3 m/s
+Mass of the Earth, M e = 6 × 10 24 kg
+Radius of the Earth, R e = 6.4 × 10 6 m
+Height reached by rocket mass, m = h
+At the surface of the Earth,
+Total energy of the rocket = Kinetic energy + Potential energy
+= (1/2)mv 2 + (-GM e m / R e )
+At highest point h,
+v = 0
+And, Potential energy = -GM e m / (R e + h)
+Total energy of the rocket = 0 + [ -GM e m / (R e + h) ]
+= -GM e m / (R e + h)
+From the law of conservation of energy, we have
+Total energy of the rocket at the Earth’s surface = Total energy at height h
+(1/2)mv 2 + (-GM e m / R e ) = -GM e m / (R e + h)
+(1/2)v 2 = GM e [ (1/R e ) - 1 / (R e + h) ]
+= GM e [ (R e + h - R e )  / R e (R e + h) ]
+(1/2)v 2 = gR e h / (R e + h)
+Where g = GM / R e 2 = 9.8 ms -2
+∴ v 2 (R e + h) = 2gR e h
+v 2 R e = h(2gR e - v 2 )
+h = R e v 2 / (2gR e -  v 2 )
+= 6.4 × 10 6 × (5 × 10 3 ) 2 / [ 2 × 9.8 × 6.4 × 10 6 - (5 × 10 3 ) 2
+h = 1.6 × 10 6 m
+Height achieved by the rocket with respect to the centre of the Earth = R e + h
+= 6.4 × 10 6 + 1.6 × 10 6 =  8 × 10 6 m."
+        },
+        {
+            "id": "21",
+            "title": "Solution 21",
+            "content": "Grvitational field at the mid-point of the line joining the centres of the two spheres
+= GM/(r/2) 2 (alog negative r) + GM/(r/2) (along r) = 0
+
+Gravitational potential at the midpoint f the line joining the centres of the two spheres is
+V = - GM/r/2 + (-GM/r/2) = -4GM/r = -4 × 6.67 × 10 -11 × 100/1.0
+= -2.7 × 10 -8 J/Kg
+
+As the effective force on the body placed at mid-point is zero, sso the body is in equilibrium. If the body is displaced a little towards either mass body from its equilibrium position, it will not return back to its inital position of equilibrium. Hence, the body is in unstable equilibrium."
+            },
+            {
+                "id": "22",
+                "title": "Solution 22",
+                "content": "Mass of the Earth, M = 6.0 × 10 24 kg
+Radius of the Earth, R = 6400 km = 6.4 × 10 6 m
+Height of a geostationary satellite from the surface of the Earth,
+h = 36000 km = 3.6 × 10 7 m
+Gravitational potential energy due to Earth’s gravity at height h,
+= -GM / (R + h)
+= - 6.67 × 10 -11 × 6 × 10 24 / (3.6 × 10 7 + 0.64 × 10 7 )
+= -9.4 × 10 6 J/kg."
+                },
+                {
+                    "id": "23",
+                    "title": "Solution 23",
+                    "content": "Solution :
+A body gets stuck to the surface of a star if the inward gravitational force is greater than the outward centrifugal force caused by the rotation of the star.
+Gravitational force, f g = - GMm / R 2
+Where,
+M = Mass of the star = 2.5 × 2 × 10 30 = 5 × 10 30 kg
+m = Mass of the body
+R = Radius of the star = 12 km = 1.2 ×10 4 m
+∴ f g = 6.67 × 10 -11 × 5 × 10 30 × m / (1.2 × 10 4 ) 2 =  2.31 × 10 11 m N
+Centrifugal force, f c = mrω 2
+ω = Angular speed = 2πν
+ν = Angular frequency = 1.2 rev s –1
+f c = mR (2πν) 2
+= m × (1.2 ×10 4 ) × 4 × (3.14) 2 × (1.2) 2 = 1.7 ×10 5 m N
+Since f g > f c , the body will remain stuck to the surface of the star."},{ "id": "24",
+"title": "Solution 24",
+"content": "24. A spaceship is stationed on Mars. How much energy must be expended on the spaceship to launch it out of the solar system? Mass of the space ship = 1000 kg; mass of the Sun = 2 × 10 30 kg; mass of mars = 6.4 × 10 23 kg; radius of mars = 3395 km; radius of the orbit of mars = 2.28 × 10 8 kg; G= 6.67 × 10 –11 m 2 kg –2 .
+
+Solution :
+Mass of the spaceship, m s = 1000 kg
+Mass of the Sun, M = 2 × 10 30 kg
+Mass of Mars, m m = 6.4 × 10 23 kg
+Orbital radius of Mars, R = 2.28 × 10 8 kg =2.28 × 10 11 m
+Radius of Mars, r = 3395 km = 3.395 × 10 6 m
+Universal gravitational constant, G = 6.67 × 10 –11 m 2 kg –2
+Potential energy of the spaceship due to the gravitational attraction of the Sun = -GMm s / R
+Potential energy of the spaceship due to the gravitational attraction of Mars = -GM m m s / r
+Since the spaceship is stationed on Mars, its velocity and hence, its kinetic energy will be zero.
+Total energy of the spaceship =  -GMm s / R -  GM m m s / r
+= -Gm s [ (M / R) + (m m / r) ]
+The negative sign indicates that the system is in bound state.
+Energy required for launching the spaceship out of the solar system
+= – (Total energy of the spaceship)
+= Gm s [ (M / R) + (m m / r) ]
+= 6.67 × 10 -11 × 10 3 × [ (2 × 10 30 / 2.28 × 10 11 ) + (6.4 × 10 23 / 3.395 × 10 6 ) ]
+= 596.97 × 10 9 =  6 × 10 11 J."
+                },
+                {
+                    "id": "25",
+                    "title": "Solution 25",
+                    "content": "Given Data:Initial velocity of the rocket, $v = 2 \text{ km/s} = 2 \times 10^3 \text{ m/s}$Mass of Mars, $M = 6.4 \times 10^{23} \text{ kg}$Radius of Mars, $R = 3395 \text{ km} = 3.395 \times 10^6 \text{ m}$Universal gravitational constant, $G = 6.67 \times 10^{-11} \text{ N m}^2 \text{ kg}^{-2}$Mass of the rocket = $m$Energy Analysis:Initial kinetic energy of the rocket = $\frac{1}{2}mv^2$Initial potential energy of the rocket = $-\frac{GMm}{R}$Total initial energy = $\frac{1}{2}mv^2 - \frac{GMm}{R}$If 20% of initial kinetic energy is lost due to Martian atmospheric resistance, then only 80% of its kinetic energy helps in reaching a height.Total initial energy available = $\left(\frac{80}{100}\right) \times \frac{1}{2}mv^2 - \frac{GMm}{R} = 0.4mv^2 - \frac{GMm}{R}$Maximum height reached by the rocket = $h$At this height, the velocity and hence the kinetic energy of the rocket will become zero.Total energy of the rocket at height $h$ = $-\frac{GMm}{R+h}$Calculation:Applying the law of conservation of energy:$$0.4mv^2 - \frac{GMm}{R} = -\frac{GMm}{R+h}$$$$0.4v^2 = \frac{GM}{R} - \frac{GM}{R+h}$$$$0.4v^2 = GM \left( \frac{1}{R} - \frac{1}{R+h} \right)$$$$0.4v^2 = GM \left( \frac{R+h-R}{R(R+h)} \right)$$$$0.4v^2 = \frac{GMh}{R(R+h)}$$$$\frac{R+h}{h} = \frac{GM}{0.4v^2R}$$$$\frac{R}{h} + 1 = \frac{GM}{0.4v^2R}$$$$\frac{R}{h} = \frac{GM}{0.4v^2R} - 1$$$$h = \frac{R}{\frac{GM}{0.4v^2R} - 1}$$$$h = \frac{0.4R^2v^2}{GM - 0.4v^2R}$$$$h = \frac{0.4 \times (3.395 \times 10^6)^2 \times (2 \times 10^3)^2}{6.67 \times 10^{-11} \times 6.4 \times 10^{23} - 0.4 \times (2 \times 10^3)^2 \times (3.395 \times 10^6)}$$$$h = \frac{18.442 \times 10^{18}}{42.688 \times 10^{12} - 5.432 \times 10^{12}}$$$$h = \frac{18.442}{37.256} \times 10^6$$$$h = 495 \times 10^3 \text{ m} = 495 \text{ km}$$"
+                }
+    ]
+}

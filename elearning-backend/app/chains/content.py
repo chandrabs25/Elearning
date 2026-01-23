@@ -252,6 +252,24 @@ def get_example_with_solution(section_id: str, example_label: str) -> dict | Non
     return None
 
 
+def get_exercise_with_solution(exercise_label: str) -> dict | None:
+    """Get exercise item from EXERCISES section with its full solution."""
+    data = load_gravity_content()
+    
+    for section in data.get("sections", []):
+        if section.get("section_id") == "EXERCISES":
+            for item in section.get("content", []):
+                if item.get("type") == "exercise_item" and item.get("label") == exercise_label:
+                    return {
+                        "label": item.get("label"),
+                        "question": item.get("question"),
+                        "sub_questions": item.get("sub_questions", []),
+                        "body": item.get("body"),
+                        "solution": item.get("solution", "")
+                    }
+    return None
+
+
 def get_next_section_id(current_section_id: str) -> str | None:
     """Get the next section ID in the table of contents."""
     toc = get_table_of_contents()

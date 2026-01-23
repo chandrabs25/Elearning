@@ -11,12 +11,22 @@ interface Exercise {
     hint?: string;
 }
 
+interface EvaluationResult {
+    isCorrect: boolean;
+    score: number;
+    feedback: string;
+    correctSolution: string;
+    comparison: string;
+    masteryChange: number;
+    newMastery: number;
+}
+
 interface ExercisePanelProps {
     title: string;
     sectionId: string;
     sectionTitle: string;
     exercises: Exercise[];
-    onAttempt: (exerciseLabel: string, answer: string) => void;
+    onSubmitAnswer: (exerciseLabel: string, answer: string) => Promise<EvaluationResult>;
     onRequestHint: (exerciseLabel: string) => void;
     completedExercises?: string[];
     bonusAvailable?: boolean;
@@ -27,7 +37,7 @@ export default function ExercisePanel({
     sectionId,
     sectionTitle,
     exercises,
-    onAttempt,
+    onSubmitAnswer,
     onRequestHint,
     completedExercises = [],
     bonusAvailable = true
@@ -35,11 +45,22 @@ export default function ExercisePanel({
     const [selectedExercise, setSelectedExercise] = useState<Exercise | null>(null);
     const [userAnswer, setUserAnswer] = useState("");
     const [showHint, setShowHint] = useState(false);
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [evaluationResult, setEvaluationResult] = useState<EvaluationResult | null>(null);
+    const [showSolution, setShowSolution] = useState(false);
 
-    const handleSubmit = () => {
-        if (selectedExercise && userAnswer.trim()) {
-            onAttempt(selectedExercise.label, userAnswer);
-            setUserAnswer("");
+    const handleSubmit = async () => {
+        if (selectedExercise && userAnswer.trim() && !isSubmitting) {
+            setIsSubmitting(true);
+            try {
+                const result = await onSubmitAnswer(selectedExercise.label, userAnswer);
+                setEvaluationResult(result);
+                setShowSolution(true);
+            } catch (error) {
+                console.error("Failed to submit answer:", error);
+            } finally {
+                setIsSubmitting(false);
+            }
         }
     };
 
@@ -48,6 +69,20 @@ export default function ExercisePanel({
             onRequestHint(selectedExercise.label);
             setShowHint(true);
         }
+    };
+
+    const handleSelectExercise = (exercise: Exercise) => {
+        setSelectedExercise(exercise);
+        setShowHint(false);
+        setUserAnswer("");
+        setEvaluationResult(null);
+        setShowSolution(false);
+    };
+
+    const handleTryAgain = () => {
+        setUserAnswer("");
+        setEvaluationResult(null);
+        setShowSolution(false);
     };
 
     const isCompleted = (label: string) => completedExercises.includes(label);
@@ -86,23 +121,17 @@ export default function ExercisePanel({
                             initial={{ opacity: 0, x: -10 }}
                             animate={{ opacity: 1, x: 0 }}
                             transition={{ delay: index * 0.05 }}
-                            onClick={() => {
-                                setSelectedExercise(exercise);
-                                setShowHint(false);
-                                setUserAnswer("");
-                            }}
-                            className={`w-full text-left p-3 rounded-xl transition-all ${
-                                selectedExercise?.label === exercise.label
+                            onClick={() => handleSelectExercise(exercise)}
+                            className={`w-full text-left p-3 rounded-xl transition-all ${selectedExercise?.label === exercise.label
                                     ? "bg-purple-500/20 border border-purple-500/30"
                                     : "bg-white/5 hover:bg-white/10 border border-transparent"
-                            }`}
+                                }`}
                         >
                             <div className="flex items-center justify-between">
-                                <span className={`text-sm font-medium ${
-                                    selectedExercise?.label === exercise.label 
-                                        ? "text-purple-400" 
+                                <span className={`text-sm font-medium ${selectedExercise?.label === exercise.label
+                                        ? "text-purple-400"
                                         : "text-white/80"
-                                }`}>
+                                    }`}>
                                     {exercise.label}
                                 </span>
                                 {isCompleted(exercise.label) && (
@@ -135,7 +164,7 @@ export default function ExercisePanel({
                                 <div className="bg-white/5 rounded-xl p-4 border border-white/10">
                                     <h4 className="text-purple-400 font-medium mb-2">{selectedExercise.label}</h4>
                                     <p className="text-white/80 leading-relaxed">{selectedExercise.question}</p>
-                                    
+
                                     {selectedExercise.body && (
                                         <p className="text-white/60 mt-2">{selectedExercise.body}</p>
                                     )}
@@ -170,34 +199,114 @@ export default function ExercisePanel({
                                     </motion.div>
                                 )}
 
-                                {/* Answer Input */}
-                                <div className="space-y-3">
-                                    <textarea
-                                        value={userAnswer}
-                                        onChange={(e) => setUserAnswer(e.target.value)}
-                                        placeholder="Describe your approach to solving this problem..."
-                                        className="w-full h-32 px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-white/30 focus:outline-none focus:border-purple-500/50 resize-none"
-                                    />
+                                {/* Evaluation Result */}
+                                {evaluationResult && (
+                                    <motion.div
+                                        initial={{ opacity: 0, scale: 0.95 }}
+                                        animate={{ opacity: 1, scale: 1 }}
+                                        className={`rounded-xl p-4 border ${evaluationResult.isCorrect
+                                                ? "bg-emerald-500/10 border-emerald-500/30"
+                                                : "bg-orange-500/10 border-orange-500/30"
+                                            }`}
+                                    >
+                                        {/* Score Header */}
+                                        <div className="flex items-center gap-4 mb-3">
+                                            <div className={`text-3xl font-bold ${evaluationResult.isCorrect ? "text-emerald-400" : "text-orange-400"
+                                                }`}>
+                                                {evaluationResult.score}%
+                                            </div>
+                                            <div className="flex-1">
+                                                <div className={`text-sm font-medium ${evaluationResult.isCorrect ? "text-emerald-400" : "text-orange-400"
+                                                    }`}>
+                                                    {evaluationResult.isCorrect ? "✓ Correct!" : "✗ Needs Improvement"}
+                                                </div>
+                                                <div className="text-white/60 text-sm mt-1">
+                                                    {evaluationResult.feedback}
+                                                </div>
+                                            </div>
+                                            <div className={`px-2 py-1 rounded text-xs font-medium ${evaluationResult.masteryChange > 0
+                                                    ? "bg-green-500/20 text-green-400"
+                                                    : "bg-red-500/20 text-red-400"
+                                                }`}>
+                                                {evaluationResult.masteryChange > 0 ? "+" : ""}{evaluationResult.masteryChange} mastery
+                                            </div>
+                                        </div>
 
-                                    <div className="flex gap-3">
-                                        <button
-                                            onClick={handleRequestHint}
-                                            className="px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-white/60 hover:bg-white/10 hover:text-white transition-all text-sm"
-                                        >
-                                            💡 Get Hint
-                                        </button>
-                                        <button
-                                            onClick={handleSubmit}
-                                            disabled={!userAnswer.trim()}
-                                            className="flex-1 px-4 py-2 bg-gradient-to-r from-purple-500 to-indigo-600 rounded-xl text-white font-medium hover:from-purple-600 hover:to-indigo-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                                        >
-                                            Submit Answer
-                                        </button>
+                                        {/* Comparison (if not fully correct) */}
+                                        {evaluationResult.comparison && !evaluationResult.isCorrect && (
+                                            <div className="text-sm text-yellow-200/70 mb-3 p-2 bg-yellow-500/5 rounded-lg">
+                                                💡 {evaluationResult.comparison}
+                                            </div>
+                                        )}
+
+                                        {/* Solution Reveal */}
+                                        <details className="mt-3 group" open={showSolution}>
+                                            <summary className="cursor-pointer text-emerald-400 font-medium text-sm hover:text-emerald-300 transition-colors list-none flex items-center gap-2">
+                                                <svg className="w-4 h-4 transition-transform group-open:rotate-90" fill="currentColor" viewBox="0 0 20 20">
+                                                    <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
+                                                </svg>
+                                                📖 View Correct Solution
+                                            </summary>
+                                            <motion.div
+                                                initial={{ opacity: 0 }}
+                                                animate={{ opacity: 1 }}
+                                                className="mt-3 pl-4 border-l-2 border-emerald-500/30 text-white/80 text-sm leading-relaxed whitespace-pre-wrap"
+                                            >
+                                                {evaluationResult.correctSolution}
+                                            </motion.div>
+                                        </details>
+
+                                        {/* Try Again Button */}
+                                        {!evaluationResult.isCorrect && (
+                                            <button
+                                                onClick={handleTryAgain}
+                                                className="mt-4 w-full px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-white/70 hover:bg-white/10 hover:text-white transition-all text-sm"
+                                            >
+                                                🔄 Try Again
+                                            </button>
+                                        )}
+                                    </motion.div>
+                                )}
+
+                                {/* Answer Input - only show if not evaluated yet */}
+                                {!evaluationResult && (
+                                    <div className="space-y-3">
+                                        <textarea
+                                            value={userAnswer}
+                                            onChange={(e) => setUserAnswer(e.target.value)}
+                                            placeholder="Describe your approach to solving this problem..."
+                                            className="w-full h-32 px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-white/30 focus:outline-none focus:border-purple-500/50 resize-none"
+                                            disabled={isSubmitting}
+                                        />
+
+                                        <div className="flex gap-3">
+                                            <button
+                                                onClick={handleRequestHint}
+                                                disabled={isSubmitting}
+                                                className="px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-white/60 hover:bg-white/10 hover:text-white transition-all text-sm disabled:opacity-50"
+                                            >
+                                                💡 Get Hint
+                                            </button>
+                                            <button
+                                                onClick={handleSubmit}
+                                                disabled={!userAnswer.trim() || isSubmitting}
+                                                className="flex-1 px-4 py-2 bg-gradient-to-r from-purple-500 to-indigo-600 rounded-xl text-white font-medium hover:from-purple-600 hover:to-indigo-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                                            >
+                                                {isSubmitting ? (
+                                                    <>
+                                                        <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                                        Evaluating...
+                                                    </>
+                                                ) : (
+                                                    "Submit Answer"
+                                                )}
+                                            </button>
+                                        </div>
                                     </div>
-                                </div>
+                                )}
 
                                 {/* Bonus Info */}
-                                {bonusAvailable && !isCompleted(selectedExercise.label) && (
+                                {bonusAvailable && !isCompleted(selectedExercise.label) && !evaluationResult && (
                                     <div className="text-center text-xs text-white/40 pt-2">
                                         ⭐ Correctly solving this earns <span className="text-yellow-400">+5 bonus mastery</span>
                                     </div>
@@ -223,3 +332,4 @@ export default function ExercisePanel({
         </div>
     );
 }
+

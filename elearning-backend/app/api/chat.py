@@ -15,7 +15,7 @@ async def chat_endpoint(request: ChatRequest):
     # 2. Simple Invoke
     chat_completion = await client.chat.completions.create(
         messages=[{"role": "user", "content": request.message}],
-        model="llama-3.3-70b-versatile",
+        model="moonshotai/kimi-k2-instruct-0905",
     )
     
     return ChatResponse(message=chat_completion.choices[0].message.content)

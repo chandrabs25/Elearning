@@ -88,30 +88,30 @@ export default function TutorV2Page() {
     // Text-to-Speech function using Groq Orpheus API
     const speak = useCallback(async (text: string) => {
         if (!voiceEnabled || !text) return;
-        
+
         try {
             const response = await fetch(`${BACKEND_URL}/api/tutor/speak`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ text })
             });
-            
+
             if (response.ok && response.status !== 204) {
                 const audioBlob = await response.blob();
                 if (audioBlob.size > 0) {
                     const audioUrl = URL.createObjectURL(audioBlob);
-                    
+
                     // Stop any currently playing audio
                     if (audioRef.current) {
                         audioRef.current.pause();
                         audioRef.current = null;
                     }
-                    
+
                     const audio = new Audio(audioUrl);
                     audioRef.current = audio;
                     audio.volume = 0.8;
                     audio.play().catch(err => console.log("Audio playback failed:", err));
-                    
+
                     // Cleanup URL after playback
                     audio.onended = () => URL.revokeObjectURL(audioUrl);
                 }
@@ -194,7 +194,7 @@ export default function TutorV2Page() {
             const data = await res.json();
             setUI(data.ui);
             setContext(data.conversation_context || {});
-            
+
             // Set initial progress
             if (data.ui?.progress) {
                 setProgress(data.ui.progress);
@@ -227,10 +227,10 @@ export default function TutorV2Page() {
     // Get voice feedback message based on command
     const getVoiceFeedback = (message: string, responseData: any): string => {
         const msg = message.toLowerCase();
-        
+
         // Check what kind of response we got
         const panelTypes = responseData.ui?.panels?.map((p: Panel) => p.type) || [];
-        
+
         if (msg.includes("quiz") || msg.includes("test me")) {
             return "Here's a quiz question for you.";
         }
@@ -256,7 +256,7 @@ export default function TutorV2Page() {
         if (panelTypes.includes("ExplanationPanel")) {
             return "Content loaded.";
         }
-        
+
         return "Done.";
     };
 
@@ -265,7 +265,7 @@ export default function TutorV2Page() {
         if (!message.trim() || isProcessing) return;
 
         setIsProcessing(true);
-        
+
         try {
             const res = await fetch(`${BACKEND_URL}/api/tutor/converse`, {
                 method: "POST",
@@ -382,19 +382,19 @@ export default function TutorV2Page() {
     // Handle closing a panel
     const handleClosePanel = (panelIndex: number) => {
         if (!ui) return;
-        
+
         const closingPanel = ui.panels[panelIndex];
-        
+
         // Clear chat state if closing chat panel
         if (closingPanel.type === "ChatPanel") {
             setChatMessages([]);
             setChatSuggestions([]);
             setIsChatTyping(false);
         }
-        
+
         const newPanels = ui.panels.filter((_, i) => i !== panelIndex);
         setUI({ ...ui, panels: newPanels });
-        
+
         // Reset focus
         if (focusedPanelIndex === panelIndex) {
             setFocusedPanelIndex(newPanels.length > 0 ? 0 : null);
@@ -421,6 +421,53 @@ export default function TutorV2Page() {
     const handleSectionClick = (sectionId: string) => {
         sendTutorMessage(`teach me ${sectionId}`);
     };
+
+    // Handle exercise answer submission for LLM evaluation
+    const handleExerciseSubmit = useCallback(async (exerciseLabel: string, answer: string) => {
+        try {
+            const response = await fetch(`${BACKEND_URL}/api/tutor/evaluate-exercise`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    user_id: USER_ID,
+                    exercise_label: exerciseLabel,
+                    student_answer: answer,
+                    is_bonus: true
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error("Failed to evaluate exercise");
+            }
+
+            const data = await response.json();
+
+            // Refresh progress after exercise attempt
+            await fetchProgress();
+
+            return {
+                isCorrect: data.is_correct,
+                score: data.score,
+                feedback: data.feedback,
+                correctSolution: data.correct_solution,
+                comparison: data.comparison,
+                masteryChange: data.mastery_change,
+                newMastery: data.new_mastery
+            };
+        } catch (error) {
+            console.error("Exercise evaluation error:", error);
+            // Return a fallback response
+            return {
+                isCorrect: false,
+                score: 0,
+                feedback: "Unable to evaluate your answer. Please try again.",
+                correctSolution: "",
+                comparison: "",
+                masteryChange: 0,
+                newMastery: 0
+            };
+        }
+    }, []);
 
     // Get appropriate placeholder for InputBar
     const getInputPlaceholder = () => {
@@ -496,7 +543,7 @@ export default function TutorV2Page() {
                         <span className="text-white">Tutor</span>
                         <span className="text-white/40">.gen</span>
                     </motion.h1>
-                    
+
                     {/* Progress Bar */}
                     <div className="flex items-center gap-6">
                         <ProgressBar
@@ -506,37 +553,37 @@ export default function TutorV2Page() {
                             explorationPoints={progress.exploration_points}
                             onSectionClick={handleSectionClick}
                         />
-                        
+
                         <nav className="flex gap-4 text-sm text-white/40 items-center">
-                            <button 
+                            <button
                                 onClick={() => sendTutorMessage("show exercises")}
                                 className="hover:text-white transition-colors duration-300"
                             >
                                 Exercises
                             </button>
-                            <button 
+                            <button
                                 onClick={() => sendTutorMessage("show topics")}
                                 className="hover:text-white transition-colors duration-300"
                             >
                                 Topics
                             </button>
                             <div className="w-px h-4 bg-white/10" />
-                            <button 
+                            <button
                                 onClick={() => setVoiceEnabled(prev => !prev)}
                                 className={`flex items-center gap-1.5 transition-colors duration-300 ${voiceEnabled ? 'text-emerald-400' : 'text-white/40 hover:text-white'}`}
                                 title={voiceEnabled ? "Voice feedback enabled" : "Voice feedback disabled"}
                             >
                                 {voiceEnabled ? (
                                     <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
-                                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
-                                        <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                                        <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
                                     </svg>
                                 ) : (
                                     <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
-                                        <line x1="23" y1="9" x2="17" y2="15"/>
-                                        <line x1="17" y1="9" x2="23" y2="15"/>
+                                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                                        <line x1="23" y1="9" x2="17" y2="15" />
+                                        <line x1="17" y1="9" x2="23" y2="15" />
                                     </svg>
                                 )}
                                 <span className="text-xs">Voice</span>
@@ -577,6 +624,8 @@ export default function TutorV2Page() {
                                     isChatTyping={panel.type === "ChatPanel" ? isChatTyping : undefined}
                                     chatSuggestions={panel.type === "ChatPanel" ? chatSuggestions : undefined}
                                     onChatSuggestionClick={panel.type === "ChatPanel" ? handleChatSuggestionClick : undefined}
+                                    // Exercise-specific props
+                                    onExerciseSubmit={panel.type === "ExercisePanel" ? handleExerciseSubmit : undefined}
                                 />
                             ))}
                         </motion.div>

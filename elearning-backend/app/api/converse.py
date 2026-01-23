@@ -261,7 +261,6 @@ async def chat_panel_message(req: ChatPanelRequest):
     """
     Handle messages sent from the ChatPanel.
     Returns responses with rich content (math, diagrams, etc.).
-    Updates mastery only for relevant chat interactions.
     """
     from groq import AsyncGroq
     from app.config import settings
@@ -269,64 +268,67 @@ async def chat_panel_message(req: ChatPanelRequest):
     section_id = req.context.get("current_section_id")
     section_title = req.context.get("current_section_title", "Gravitation")
     
+    # Fetch full section content
+    section_content_text = ""
+    if section_id:
+        section = get_section_by_id(section_id)
+        if section:
+            section_content = format_content_for_ui(section)
+            # Convert content list to text for LLM context
+            content_parts = []
+            for item in section_content:
+                if isinstance(item, dict):
+                    if item.get("type") == "text":
+                        content_parts.append(item.get("text", ""))
+                    elif item.get("type") == "latex":
+                        content_parts.append(f"$${item.get('content', '')}$$")
+                    elif item.get("type") == "heading":
+                        content_parts.append(f"\n## {item.get('text', '')}\n")
+                    elif item.get("type") == "example_box":
+                        content_parts.append(f"\nExample: {item.get('question', '')}")
+                        if item.get("solution"):
+                            content_parts.append(f"Solution: {item['solution'].get('meta', '')}")
+                elif isinstance(item, str):
+                    content_parts.append(item)
+            section_content_text = "\n".join(content_parts)
+    
     client = AsyncGroq(api_key=settings.groq_api_key)
     
-    # Step 1: Check relevance of the user's question
-    relevance = "relevant"  # default
-    if section_id:
-        relevance_prompt = f"""You are evaluating if a student's question is relevant to their current study topic.
-
-Current Section: {section_title} (Section {section_id})
-Chapter: Gravitation (covers: Kepler's laws, universal gravitation, gravitational constant, acceleration due to gravity, gravitational potential energy, escape speed, earth satellites, orbital energy)
-
-Student's Question: "{req.message}"
-
-Classify this question as ONE of:
-- "relevant": Directly about the current section topic ({section_title})
-- "related": About gravitation/physics but a different section (e.g., asking about escape velocity while studying Kepler's laws)
-- "irrelevant": Not about physics or gravitation at all (e.g., "what's the weather?", "tell me a joke")
-
-Reply with ONLY one word: relevant, related, or irrelevant"""
-
-        try:
-            relevance_response = await client.chat.completions.create(
-                messages=[{"role": "user", "content": relevance_prompt}],
-                model="llama-3.3-70b-versatile"
-            )
-            relevance_text = relevance_response.choices[0].message.content.strip().lower()
-            if "irrelevant" in relevance_text:
-                relevance = "irrelevant"
-            elif "related" in relevance_text:
-                relevance = "related"
-            else:
-                relevance = "relevant"
-        except:
-            relevance = "relevant"  # Default to relevant on error
-    
-    # Step 2: Record chat interaction with relevance
+    # Record chat interaction for mastery tracking
     mastery_result = None
     if section_id:
-        mastery_result = await record_chat_interaction(req.user_id, section_id, relevance)
+        mastery_result = await record_chat_interaction(req.user_id, section_id, "relevant")
     
-    # Step 3: Build the response prompt
+    # Build the system prompt with section content
     context_str = f"The user is currently studying: {section_title}. " if section_title else ""
     
-    # Add relevance-aware instruction
-    relevance_instruction = ""
-    if relevance == "related":
-        relevance_instruction = "\nNote: The student is asking about a related but different topic. Answer helpfully, but gently guide them back to the current section if appropriate."
-    elif relevance == "irrelevant":
-        relevance_instruction = "\nNote: This question seems off-topic. Answer briefly if possible, then redirect: 'That's interesting! But let's focus on gravitation. Do you have questions about the current topic?'"
+    content_context = ""
+    if section_content_text:
+        content_context = f"""
+
+Here is the textbook content for the current section:
+---
+{section_content_text}
+---
+Use this content to provide accurate, grounded answers. Reference specific concepts, formulas, and examples from the textbook when relevant.
+If the student asks something off-topic, briefly acknowledge it and gently guide them back to the current topic.
+"""
     
-    system_prompt = f"""You are an AI tutor helping a student learn physics (specifically gravitation).
-{context_str}{relevance_instruction}
+    system_prompt = f"""You are an AI tutor helping a student learn physics.
+{context_str}{content_context}
 When answering:
 - Be clear and educational
 - Use LaTeX for math equations (wrap with $$ for block equations)
-- Refer to relevant concepts from the textbook when applicable
+- Reference concepts from the textbook content provided above when applicable
 - Keep responses focused and digestible
 
-Format your response as educational content. If there are equations, include them.
+At the END of your response, include exactly 3 follow-up question suggestions that the student might want to ask next. These should be contextual to what you just explained and encourage deeper learning.
+
+Format the suggestions section like this:
+---SUGGESTIONS---
+1. [First suggestion question]
+2. [Second suggestion question]  
+3. [Third suggestion question]
 """
     
     # Prepare conversation history for LLM
@@ -339,15 +341,15 @@ Format your response as educational content. If there are equations, include the
     # Call LLM for response
     response = await client.chat.completions.create(
         messages=messages,
-        model="llama-3.3-70b-versatile"
+        model="moonshotai/kimi-k2-instruct-0905"
     )
     response_text = response.choices[0].message.content
     
-    # Parse response for rich content
-    content_items = parse_response_to_content(response_text)
+    # Parse response and extract suggestions
+    main_content, suggestions = parse_response_with_suggestions(response_text)
     
-    # Generate follow-up suggestions based on relevance
-    suggestions = generate_suggestions(req.message, req.context, relevance)
+    # Parse main content for rich content items
+    content_items = parse_response_to_content(main_content)
     
     return ChatPanelResponse(
         message=ChatMessage(
@@ -395,54 +397,42 @@ def parse_response_to_content(text: str) -> list:
     return items if items else [{"type": "text", "text": text}]
 
 
-def generate_suggestions(message: str, context: dict, relevance: str = "relevant") -> list[str]:
-    """Generate follow-up question suggestions based on context and relevance."""
-    suggestions = []
+def parse_response_with_suggestions(text: str) -> tuple[str, list[str]]:
+    """
+    Parse LLM response to extract main content and suggestions.
+    Returns (main_content, suggestions_list).
+    """
+    import re
     
-    msg_lower = message.lower()
-    section_title = context.get("current_section_title", "").lower()
+    # Default suggestions in case parsing fails
+    default_suggestions = [
+        "Can you explain this with an example?",
+        "What's the key formula here?",
+        "Quiz me on this!"
+    ]
     
-    # If irrelevant, guide back to topic
-    if relevance == "irrelevant":
-        return [
-            f"Tell me more about {context.get('current_section_title', 'this topic')}",
-            "Can you explain the main formula?",
-            "Quiz me on this section"
-        ]
+    # Try to split on the suggestions marker
+    if "---SUGGESTIONS---" in text:
+        parts = text.split("---SUGGESTIONS---")
+        main_content = parts[0].strip()
+        suggestions_text = parts[1].strip() if len(parts) > 1 else ""
+        
+        # Parse numbered suggestions
+        suggestions = []
+        lines = suggestions_text.split("\n")
+        for line in lines:
+            line = line.strip()
+            # Match patterns like "1. ", "2. ", "3. " or "1) ", "2) ", etc.
+            match = re.match(r'^[\d]+[\.\)]\s*(.+)$', line)
+            if match:
+                suggestion = match.group(1).strip()
+                if suggestion:
+                    suggestions.append(suggestion)
+        
+        return main_content, suggestions[:3] if suggestions else default_suggestions
     
-    # If related (different section), suggest exploring or returning
-    if relevance == "related":
-        return [
-            "How does this connect to what I'm studying?",
-            f"Let's go back to {context.get('current_section_title', 'the current topic')}",
-            "Show me related sections"
-        ]
-    
-    # Relevant questions - physics-specific suggestions
-    if "escape" in msg_lower or "velocity" in msg_lower:
-        suggestions.append("How is escape velocity related to orbital velocity?")
-        suggestions.append("What's Earth's escape velocity?")
-    elif "kepler" in msg_lower:
-        suggestions.append("Can you show me the derivation?")
-        suggestions.append("What are some real-world applications?")
-    elif "gravity" in msg_lower or "gravitation" in msg_lower:
-        suggestions.append("How does gravity work on other planets?")
-        suggestions.append("What's the gravitational constant?")
-    elif "satellite" in msg_lower or "orbit" in msg_lower:
-        suggestions.append("How do geostationary satellites work?")
-        suggestions.append("What determines orbital period?")
-    elif "potential" in msg_lower or "energy" in msg_lower:
-        suggestions.append("How is potential energy related to escape velocity?")
-    
-    # Default suggestions encourage practice
-    if not suggestions:
-        suggestions = [
-            "Can you explain this with an example?",
-            "What's the key formula here?",
-            "Quiz me on this!"
-        ]
-    
-    return suggestions[:3]
+    # Fallback: return full text and default suggestions
+    return text, default_suggestions
 
 
 # === Intent Handlers ===

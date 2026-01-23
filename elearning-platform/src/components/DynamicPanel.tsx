@@ -38,6 +38,16 @@ interface DynamicPanelProps {
     isChatTyping?: boolean;
     chatSuggestions?: string[];
     onChatSuggestionClick?: (suggestion: string) => void;
+    // Exercise-specific props
+    onExerciseSubmit?: (exerciseLabel: string, answer: string) => Promise<{
+        isCorrect: boolean;
+        score: number;
+        feedback: string;
+        correctSolution: string;
+        comparison: string;
+        masteryChange: number;
+        newMastery: number;
+    }>;
 }
 
 // Animation variants
@@ -89,16 +99,16 @@ const animations = {
 };
 
 // FeedbackCard component with mastery change display
-const FeedbackCard = ({ 
-    message, 
-    status, 
-    masteryChange, 
-    newMastery, 
+const FeedbackCard = ({
+    message,
+    status,
+    masteryChange,
+    newMastery,
     actions,
-    onAction 
-}: { 
-    message: string; 
-    status: string; 
+    onAction
+}: {
+    message: string;
+    status: string;
     masteryChange?: number;
     newMastery?: number;
     actions?: Array<{ label: string; action: string }>;
@@ -111,13 +121,13 @@ const FeedbackCard = ({
         info: "border-blue-500/30 bg-blue-500/10",
         thinking: "border-white/10 bg-white/5"
     };
-    
+
     const style = statusStyles[status as keyof typeof statusStyles] || statusStyles.info;
-    
+
     return (
         <div className={`p-8 rounded-3xl border ${style}`}>
             <p className="text-white/80 whitespace-pre-wrap">{message}</p>
-            
+
             {/* Mastery Change Display */}
             {masteryChange !== undefined && (
                 <div className="mt-4 flex items-center gap-4">
@@ -131,7 +141,7 @@ const FeedbackCard = ({
                     )}
                 </div>
             )}
-            
+
             {/* Action Buttons */}
             {actions && actions.length > 0 && (
                 <div className="mt-6 flex gap-3">
@@ -146,7 +156,7 @@ const FeedbackCard = ({
                     ))}
                 </div>
             )}
-            
+
             {status === "thinking" && (
                 <div className="mt-4 flex gap-2">
                     <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" />
@@ -190,6 +200,7 @@ export default function DynamicPanel({
     isChatTyping,
     chatSuggestions,
     onChatSuggestionClick,
+    onExerciseSubmit,
 }: DynamicPanelProps) {
     const Component = componentRegistry[panel.type];
     const animationPreset = panel.animation || "fadeIn";
@@ -219,13 +230,10 @@ export default function DynamicPanel({
             onSuggestionClick: onChatSuggestionClick,
         };
     } else if (panel.type === "ExercisePanel") {
-        // Exercise panel needs specific handlers
+        // Exercise panel needs async submit handler for LLM evaluation
         componentProps = {
             ...componentProps,
-            onAttempt: (exerciseLabel: string, answer: string) => {
-                // Send the exercise answer to the tutor
-                onAction(`Exercise ${exerciseLabel}: ${answer}`);
-            },
+            onSubmitAnswer: onExerciseSubmit,
             onRequestHint: (exerciseLabel: string) => {
                 onAction(`hint for ${exerciseLabel}`);
             },
