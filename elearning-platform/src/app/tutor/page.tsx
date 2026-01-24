@@ -322,11 +322,8 @@ export default function TutorV2Page() {
                     setChatMessages([]);
                     setChatSuggestions([]);
                 }
-                // Auto-focus chat panel
-                const newChatIndex = data.ui.panels.findIndex((p: Panel) => p.type === "ChatPanel");
-                if (newChatIndex >= 0) {
-                    setFocusedPanelIndex(newChatIndex);
-                }
+                // Don't auto-focus chat panel - let user control focus
+                // User can Tab to switch panels or click on the chat panel
             }
 
             // Refresh progress after any action
@@ -693,8 +690,8 @@ export default function TutorV2Page() {
                     <button
                         onClick={() => setInputMode("answer")}
                         className={`px-3 py-1.5 rounded-lg text-sm transition-all ${inputMode === "answer"
-                                ? "bg-amber-500/20 text-amber-400 border border-amber-500/30"
-                                : "bg-white/5 text-white/50 hover:bg-white/10"
+                            ? "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                            : "bg-white/5 text-white/50 hover:bg-white/10"
                             }`}
                     >
                         📝 Answer
@@ -702,8 +699,8 @@ export default function TutorV2Page() {
                     <button
                         onClick={() => setInputMode("ask")}
                         className={`px-3 py-1.5 rounded-lg text-sm transition-all ${inputMode === "ask"
-                                ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
-                                : "bg-white/5 text-white/50 hover:bg-white/10"
+                            ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                            : "bg-white/5 text-white/50 hover:bg-white/10"
                             }`}
                     >
                         💬 Ask

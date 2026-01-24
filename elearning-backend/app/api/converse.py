@@ -1729,33 +1729,22 @@ async def _build_explanation_response(
         # Already mastered - suggest next section
         next_prompt = "🎉 Section mastered! Type 'next' to continue or explore more."
         input_placeholder = "Type 'next' to continue, or ask a question..."
-        suggested_actions = [
-            {"label": "🎉 Next Section", "action": "next", "primary": True},
-            {"label": "More Practice", "action": "quiz"},
-            {"label": "Review Content", "action": "continue"}
-        ]
+        # Removed manual quiz buttons - quizzes will auto-appear during conversation
+        suggested_actions = []
     elif current_mastery > 0:
-        # In progress - suggest quiz to gain mastery
-        next_prompt = f"📊 {current_mastery}% mastery (need 70%). Type 'quiz me' to practice!"
-        input_placeholder = "Type 'quiz me' to test yourself, or ask a question..."
-        suggested_actions = [
-            {"label": "Take Quiz", "action": "quiz", "primary": True},
-            {"label": "MCQs", "action": "mcq"},
-            {"label": "Skip to Next", "action": "next"}
-        ]
+        # In progress - guide via prompts instead of buttons
+        next_prompt = f"📊 {current_mastery}% mastery (need 70%). Keep discussing the concepts!"
+        input_placeholder = "Ask a question to deepen your understanding..."
+        suggested_actions = []
     else:
-        # Just started - encourage learning or quiz
+        # Just started - encourage discussion
         if has_examples:
-            next_prompt = "Ready to test your understanding? Type 'quiz me' or ask a question."
-            input_placeholder = "Type 'quiz me' to practice, or ask about the topic..."
+            next_prompt = "Let's explore this topic. Ask questions or discuss the concepts!"
+            input_placeholder = "What would you like to understand better?"
         else:
-            next_prompt = "Test yourself! Type 'mcq' for a question, or ask me anything."
-            input_placeholder = "Type 'mcq' to test yourself, or ask a question..."
-        suggested_actions = [
-            {"label": "Ask a Question", "action": "chat"},
-            {"label": "Quiz Me", "action": "quiz"},
-            {"label": "Skip Section", "action": "next"}
-        ]
+            next_prompt = "Let's discuss this topic. Ask me anything about the content!"
+            input_placeholder = "Ask about the topic or share your thoughts..."
+        suggested_actions = []
     
     # Show exercises panel alongside content if requested
     if exercises and show_exercises:
