@@ -33,7 +33,7 @@ const InputBar = forwardRef<HTMLInputElement, InputBarProps>(
         const [speechSupported, setSpeechSupported] = useState(false);
         const [interimTranscript, setInterimTranscript] = useState("");
         const [voiceError, setVoiceError] = useState<string | null>(null);
-        
+
         const inputRef = useRef<HTMLInputElement>(null);
         const recognitionRef = useRef<any>(null);
 
@@ -50,7 +50,7 @@ const InputBar = forwardRef<HTMLInputElement, InputBarProps>(
         // Initialize speech recognition
         const initSpeechRecognition = useCallback(() => {
             if (typeof window === "undefined") return null;
-            
+
             const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
             if (!SpeechRecognition) return null;
 
@@ -88,7 +88,7 @@ const InputBar = forwardRef<HTMLInputElement, InputBarProps>(
             recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
                 console.error("Speech recognition error:", event.error);
                 setIsListening(false);
-                
+
                 switch (event.error) {
                     case "no-speech":
                         setVoiceError("No speech detected. Try again.");
@@ -102,7 +102,7 @@ const InputBar = forwardRef<HTMLInputElement, InputBarProps>(
                     default:
                         setVoiceError("Voice input error. Try again.");
                 }
-                
+
                 setTimeout(() => setVoiceError(null), 3000);
             };
 
@@ -175,59 +175,30 @@ const InputBar = forwardRef<HTMLInputElement, InputBarProps>(
         };
 
         return (
-            <div className="flex-shrink-0 border-t border-white/5 bg-black/80 backdrop-blur-xl p-6">
+            <div className="flex-shrink-0 border-t border-white/5 bg-black/80 backdrop-blur-xl py-3 px-4">
                 <div className="max-w-3xl mx-auto">
-                    {/* Focus indicator */}
-                    <motion.div
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="flex items-center justify-between mb-3"
-                    >
-                        <div className="flex items-center gap-2">
-                            <div className="p-1.5 rounded-lg bg-white/5 text-white/40">
-                                {getFocusIcon()}
-                            </div>
-                            <span className="text-sm text-white/50">
-                                {focusLabel || (focusTarget === "chat" ? "AI Chat" : "Tutor")}
-                            </span>
-                        </div>
-                        <div className="flex items-center gap-3">
-                            {speechSupported && (
-                                <span className="text-xs text-white/30 flex items-center gap-1">
-                                    <Volume2 className="w-3 h-3" /> Voice enabled
-                                </span>
-                            )}
-                            <span className="text-xs text-white/30">
-                                Press Tab to switch panels
-                            </span>
-                        </div>
-                    </motion.div>
-
-                    {/* Hint or Voice Error */}
+                    {/* Compact status line - only shown when needed */}
                     <AnimatePresence mode="wait">
-                        {voiceError ? (
+                        {(hint || voiceError) && (
                             <motion.div
-                                key="error"
-                                initial={{ opacity: 0, y: 10 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                exit={{ opacity: 0, y: -10 }}
-                                className="flex items-center gap-2 text-sm text-red-400 mb-3"
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: "auto" }}
+                                exit={{ opacity: 0, height: 0 }}
+                                className="flex items-center gap-2 text-sm mb-2 px-2"
                             >
-                                <MicOff className="w-4 h-4" />
-                                <span>{voiceError}</span>
+                                {voiceError ? (
+                                    <>
+                                        <MicOff className="w-3 h-3 text-red-400" />
+                                        <span className="text-red-400">{voiceError}</span>
+                                    </>
+                                ) : hint ? (
+                                    <>
+                                        <Sparkles className="w-3 h-3 text-white/40" />
+                                        <span className="text-white/40">{hint}</span>
+                                    </>
+                                ) : null}
                             </motion.div>
-                        ) : hint ? (
-                            <motion.div
-                                key="hint"
-                                initial={{ opacity: 0, y: 10 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                exit={{ opacity: 0, y: -10 }}
-                                className="flex items-center gap-2 text-sm text-white/40 mb-3"
-                            >
-                                <Sparkles className="w-4 h-4" />
-                                <span>{hint}</span>
-                            </motion.div>
-                        ) : null}
+                        )}
                     </AnimatePresence>
 
                     {/* Input with Voice */}
@@ -272,8 +243,8 @@ const InputBar = forwardRef<HTMLInputElement, InputBarProps>(
                                 focus:outline-none focus:bg-white/10 focus:border-white/20
                                 transition-all duration-200
                                 ${isProcessing ? "opacity-50 cursor-wait" : ""}
-                                ${isListening 
-                                    ? "border-blue-500/50 bg-blue-500/5" 
+                                ${isListening
+                                    ? "border-blue-500/50 bg-blue-500/5"
                                     : "border-white/10"
                                 }
                             `}
@@ -337,7 +308,7 @@ const InputBar = forwardRef<HTMLInputElement, InputBarProps>(
 
                     {/* Voice tips */}
                     {speechSupported && !isListening && !value && (
-                        <motion.p 
+                        <motion.p
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
                             className="text-[10px] text-white/20 text-center mt-2"

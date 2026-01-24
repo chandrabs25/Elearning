@@ -190,6 +190,7 @@ const componentRegistry: Record<string, React.ComponentType<any>> = {
 export default function DynamicPanel({
     panel,
     index,
+    totalPanels,
     layout,
     onAction,
     calculatedWidth,
@@ -256,7 +257,7 @@ export default function DynamicPanel({
                 relative h-full min-h-0 overflow-hidden flex flex-col
                 ${layout === "focus" ? "w-full flex-1" : ""}
                 ${panel.pinned ? "ring-2 ring-white/20" : ""}
-                ${isFocused && panel.type !== "ChatPanel"
+                ${isFocused && panel.type !== "ChatPanel" && totalPanels > 1
                     ? "ring-2 ring-blue-500/30 rounded-2xl border border-blue-500/50"
                     : ""
                 }
