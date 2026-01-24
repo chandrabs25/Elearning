@@ -142,6 +142,9 @@ async def converse(req: ConversationRequest):
     context = {**req.context}
     action_payload = None
     
+    # Check if user has a current section
+    has_current_section = bool(user_state and user_state.get("current_concept"))
+    
     if req.action:
         # Try to parse as a structured action (no LLM needed)
         intent, action_payload = parse_action(req.action)
@@ -153,8 +156,25 @@ async def converse(req: ConversationRequest):
             from app.agents.intent_classifier import classify_intent_llm
             intent = await classify_intent_llm(req.action, context)
             message = req.action
+    elif context.get("focused_panel") in ("quiz", "mcq") and context.get("input_mode") == "answer":
+        # Quiz/MCQ focused in Answer mode - route to quiz answer handler
+        intent = "submit_quiz_answer"
+        message = req.message
+        context["quiz_answer"] = req.message
+    elif context.get("focused_panel") in ("chat", "quiz", "mcq", "exercise"):
+        # Interactive panels focused in Ask mode - use current section context, no RAG
+        # This is for follow-up questions about the displayed content
+        # Applies to: ChatPanel, QuizCard (ask mode), MCQCard (ask mode), ExercisePanel
+        intent = "open_chat"  # Routes to chat handler with current section
+        message = req.message
+    elif req.message and "?" in req.message:
+        # Question mark with main panel focused = doubt - use RAG
+        # This finds the most relevant section for the question
+        intent = "ask_doubt"
+        message = req.message
+        context["initial_question"] = message
     else:
-        # Free-form text - use LLM classifier
+        # Free-form text without ? - use LLM classifier
         from app.agents.intent_classifier import classify_intent_llm
         intent = await classify_intent_llm(req.message, context)
         message = req.message
@@ -201,6 +221,10 @@ async def converse(req: ConversationRequest):
 
     elif intent == "generate_mcq":
         return await handle_mcq_request(req.user_id, message, user_state, context)
+    
+    elif intent == "submit_quiz_answer":
+        # User submitted an answer to a quiz question via the input bar
+        return await handle_quiz_answer(req.user_id, message, context)
     
     elif intent == "show_exercises":
         return await handle_show_exercises(req.user_id, message, user_state, context)
@@ -983,6 +1007,98 @@ async def handle_quiz_request(user_id: str, message: str, user_state: dict, cont
     )
 
 
+async def handle_quiz_answer(user_id: str, answer: str, context: dict) -> ConversationResponse:
+    """Handle quiz answer submitted via the input bar in Answer mode."""
+    from app.agents.tutor_agent import evaluate_quiz_answer
+    
+    # Get quiz context from the conversation context
+    question = context.get("question", "")
+    solution = context.get("solution_meta") or context.get("solution_latex") or ""
+    concept_id = context.get("current_section") or "7.3"
+    
+    if not question:
+        # No active quiz question
+        return ConversationResponse(
+            ui=feedback_schema(
+                message="No quiz question found. Try 'quiz me' to get a question first.",
+                status="warning",
+                actions=[{"label": "Quiz Me", "action": "take_quiz"}]
+            ),
+            conversation_context=context
+        )
+    
+    # Use agent to evaluate the answer
+    evaluation = await evaluate_quiz_answer(
+        question=question,
+        solution=solution,
+        student_answer=answer
+    )
+    
+    is_correct = evaluation["is_correct"]
+    is_partial = evaluation["is_partial"]
+    feedback_msg = evaluation["feedback"]
+    
+    # Calculate mastery delta
+    if is_correct:
+        delta = 15
+        status = "success"
+    elif is_partial:
+        delta = 5
+        status = "warning"
+    else:
+        delta = -5
+        status = "error"
+    
+    result = await update_mastery(user_id, concept_id, delta)
+    
+    # Check for section completion
+    celebration = None
+    if result["completed"] and result["new_level"] >= MASTERY_THRESHOLD:
+        next_id = get_next_section_id(concept_id)
+        next_title = get_section_title(next_id) if next_id else None
+        section_title = get_section_title(concept_id) or concept_id
+        celebration = celebration_schema(
+            section_title=section_title,
+            mastery_percent=result["new_level"],
+            next_section_id=next_id,
+            next_section_title=next_title
+        )
+    
+    # Build guided prompt based on result
+    if result["new_level"] >= MASTERY_THRESHOLD:
+        next_prompt = "🎉 Section mastered! Type 'next' to continue."
+    elif is_correct:
+        next_prompt = f"Excellent! {result['new_level']}% mastery. Try 'quiz me' for more!"
+    elif is_partial:
+        next_prompt = f"Almost there! {result['new_level']}% mastery. Try again or ask for help."
+    else:
+        next_prompt = f"Keep trying! {result['new_level']}% mastery. Type 'explain' for help."
+    
+    ui = feedback_schema(
+        message=feedback_msg,
+        status=status,
+        mastery_change=delta,
+        new_mastery=result["new_level"],
+        actions=[
+            {"label": "Try Another", "action": "take_quiz"},
+            {"label": "Back to Topic", "action": "continue"}
+        ]
+    )
+    ui.celebration = celebration
+    ui.next_prompt = next_prompt
+    ui.input_placeholder = "Type 'quiz me' for another, or ask a question..."
+    
+    return ConversationResponse(
+        ui=ui,
+        conversation_context={
+            **context,
+            "evaluated": True,
+            "new_mastery": result["new_level"],
+            "section_completed": result["completed"]
+        }
+    )
+
+
 async def handle_mcq_request(user_id: str, message: str, user_state: dict, context: dict) -> ConversationResponse:
     """Handle 'generate mcq' intent using LLM."""
     from groq import AsyncGroq
@@ -1696,9 +1812,13 @@ async def handle_open_chat(user_id: str, message: str, user_state: dict, context
     # Check if this is a doubt/question
     initial_question = context.get("initial_question") or (message if message and "?" in message else None)
     
-    # If no current section but user has a question, use RAG search
+    # Check if an interactive panel is focused (follow-ups use current section, no RAG)
+    # Applies to: ChatPanel, QuizCard, MCQCard, ExercisePanel
+    interactive_panel_focused = context.get("focused_panel") in ("chat", "quiz", "mcq", "exercise")
+    
+    # Use RAG search ONLY for main panel focused doubts, not interactive panel follow-ups
     retrieved_sections = []
-    if initial_question and not current_section:
+    if initial_question and not interactive_panel_focused:
         try:
             from app.chains.content_search import search_relevant_sections, get_section_suggestions
             retrieved_sections = await search_relevant_sections(initial_question, top_k=3)
@@ -1707,9 +1827,30 @@ async def handle_open_chat(user_id: str, message: str, user_state: dict, context
             retrieved_sections = []
     
     existing_panels = []
+    primary_section = None
     
-    # If we have explicit current section, show it
-    if current_section:
+    # For doubts: show RAG-matched section as primary (not stale current section)
+    if initial_question and retrieved_sections:
+        # Get the top RAG match as primary content
+        top_match = retrieved_sections[0]
+        primary_section = get_section_by_id(top_match["section_id"])
+        if primary_section:
+            content = format_content_for_ui(primary_section)
+            existing_panels.append(
+                PanelContent(
+                    type="ExplanationPanel",
+                    props={
+                        "title": primary_section["section_title"],
+                        "content": content,
+                        "animated": False,
+                        "section_id": top_match["section_id"]
+                    },
+                    role="primary"
+                )
+            )
+    elif current_section:
+        # No doubt - show current section (for "open chat" without question)
+        primary_section = current_section
         content = format_content_for_ui(current_section)
         existing_panels.append(
             PanelContent(
@@ -1722,12 +1863,11 @@ async def handle_open_chat(user_id: str, message: str, user_state: dict, context
                 role="primary"
             )
         )
-    # Otherwise, just show ChatPanel alone (focus mode for doubts)
-    # No WelcomeCard - cleaner UX for question answering
+    # Otherwise: just ChatPanel alone (focus mode)
     
     chat_context = {
-        "current_section_id": current_id,
-        "current_section_title": current_section["section_title"] if current_section else None,
+        "current_section_id": primary_section["section_id"] if primary_section else current_id,
+        "current_section_title": primary_section["section_title"] if primary_section else None,
         "user_id": user_id,
         # Pass retrieved content to chat for RAG
         "retrieved_sections": retrieved_sections
@@ -1739,10 +1879,11 @@ async def handle_open_chat(user_id: str, message: str, user_state: dict, context
         initial_message=initial_question
     )
     
-    # Add "Learn More" suggestions if we found relevant sections
-    if retrieved_sections:
+    # Add "Also see" suggestions for other matched sections (not the primary)
+    if retrieved_sections and len(retrieved_sections) > 1:
         from app.chains.content_search import get_section_suggestions
-        ui.suggested_actions = get_section_suggestions(retrieved_sections)
+        # Skip the first one (already shown as primary)
+        ui.suggested_actions = get_section_suggestions(retrieved_sections[1:])
     
     return ConversationResponse(
         ui=ui,

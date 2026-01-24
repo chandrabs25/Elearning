@@ -6,7 +6,7 @@ Uses HuggingFace Inference API with BAAI/bge-base-en-v1.5 model.
 """
 
 import httpx
-from app.graph.client import get_driver
+from neo4j import GraphDatabase
 from app.config import settings
 
 
@@ -21,7 +21,7 @@ async def get_query_embedding(query: str) -> list[float]:
     
     For BGE models, queries should be prefixed with instruction for best results.
     """
-    api_key = getattr(settings, 'huggingface_api_key', None)
+    api_key = settings.huggingface_api_key
     if not api_key:
         raise ValueError("HUGGINGFACE_API_KEY not configured")
     
@@ -50,6 +50,14 @@ async def get_query_embedding(query: str) -> list[float]:
     return embedding
 
 
+def _get_sync_driver():
+    """Get a synchronous Neo4j driver for vector search."""
+    return GraphDatabase.driver(
+        settings.neo4j_uri,
+        auth=(settings.neo4j_user, settings.neo4j_password)
+    )
+
+
 async def search_relevant_sections(
     query: str, 
     top_k: int = 3,
@@ -73,8 +81,9 @@ async def search_relevant_sections(
         print(f"Embedding generation error: {e}")
         return []
     
-    # Query Neo4j vector index
-    driver = get_driver()
+    # Query Neo4j vector index using sync driver
+    # (Neo4j vector search requires sync operations)
+    driver = _get_sync_driver()
     
     try:
         with driver.session() as session:
@@ -106,6 +115,8 @@ async def search_relevant_sections(
     except Exception as e:
         print(f"Vector search error: {e}")
         return []
+    finally:
+        driver.close()
 
 
 def format_retrieved_content(sections: list[dict]) -> str:

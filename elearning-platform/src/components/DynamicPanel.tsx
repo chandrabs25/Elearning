@@ -256,7 +256,10 @@ export default function DynamicPanel({
                 relative h-full min-h-0 overflow-hidden flex flex-col
                 ${layout === "focus" ? "w-full flex-1" : ""}
                 ${panel.pinned ? "ring-2 ring-white/20" : ""}
-                ${isFocused && panel.type !== "ChatPanel" ? "ring-1 ring-white/10 rounded-2xl" : ""}
+                ${isFocused && panel.type !== "ChatPanel"
+                    ? "ring-2 ring-blue-500/30 rounded-2xl border border-blue-500/50"
+                    : ""
+                }
             `}
             style={{
                 transformOrigin: index === 0 ? "center left" : "center right",

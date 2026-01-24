@@ -71,6 +71,7 @@ export default function TutorV2Page() {
     const [error, setError] = useState<string | null>(null);
     const [isProcessing, setIsProcessing] = useState(false);
     const [focusedPanelIndex, setFocusedPanelIndex] = useState<number | null>(null);
+    const [inputMode, setInputMode] = useState<"answer" | "ask">("ask"); // For quiz/mcq input control
     const inputRef = useRef<HTMLInputElement>(null);
 
     // Chat-specific state (managed here, passed to ChatPanel)
@@ -178,6 +179,13 @@ export default function TutorV2Page() {
         }
     }, [hasChatPanel, chatPanelIndex, focusedPanelIndex]);
 
+    // Auto-switch input mode based on focused panel
+    // Default to "answer" when quiz/mcq is focused, "ask" otherwise
+    useEffect(() => {
+        const isQuizFocused = focusedPanelType === "QuizCard" || focusedPanelType === "MCQCard";
+        setInputMode(isQuizFocused ? "answer" : "ask");
+    }, [focusedPanelType]);
+
     // Handle celebration data from API response
     useEffect(() => {
         if (ui?.celebration?.show) {
@@ -275,10 +283,22 @@ export default function TutorV2Page() {
         setIsProcessing(true);
 
         try {
+            // Map panel type to focused_panel value for backend
+            const panelTypeToFocusedPanel: Record<string, string> = {
+                ChatPanel: "chat",
+                QuizCard: "quiz",
+                MCQCard: "mcq",
+                ExercisePanel: "exercise",
+            };
+            const focused_panel = focusedPanelType
+                ? panelTypeToFocusedPanel[focusedPanelType] || "main"
+                : "main";
+
             // Build request body - use action for button clicks, message for free-form text
+            const requestContext = { ...context, focused_panel, input_mode: inputMode };
             const body = isAction
-                ? { user_id: USER_ID, action: message, context }
-                : { user_id: USER_ID, message, context };
+                ? { user_id: USER_ID, action: message, context: requestContext }
+                : { user_id: USER_ID, message, context: requestContext };
 
             const res = await fetch(`${BACKEND_URL}/api/tutor/converse`, {
                 method: "POST",
@@ -663,6 +683,31 @@ export default function TutorV2Page() {
                             {action.label}
                         </button>
                     ))}
+                </div>
+            )}
+
+            {/* Input Mode Toggle - Only shown when quiz/mcq is focused */}
+            {(focusedPanelType === "QuizCard" || focusedPanelType === "MCQCard") && (
+                <div className="flex items-center gap-2 mb-2 px-4">
+                    <span className="text-xs text-white/40">Mode:</span>
+                    <button
+                        onClick={() => setInputMode("answer")}
+                        className={`px-3 py-1.5 rounded-lg text-sm transition-all ${inputMode === "answer"
+                                ? "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                                : "bg-white/5 text-white/50 hover:bg-white/10"
+                            }`}
+                    >
+                        📝 Answer
+                    </button>
+                    <button
+                        onClick={() => setInputMode("ask")}
+                        className={`px-3 py-1.5 rounded-lg text-sm transition-all ${inputMode === "ask"
+                                ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                                : "bg-white/5 text-white/50 hover:bg-white/10"
+                            }`}
+                    >
+                        💬 Ask
+                    </button>
                 </div>
             )}
 
