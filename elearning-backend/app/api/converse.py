@@ -438,7 +438,14 @@ async def chat_panel_message(req: ChatPanelRequest):
         section_id = primary_section.get("section_id", section_id or "7.3")
         section_title = primary_section.get("title", section_title)
     else:
+        # Fallback: Load section content from section_id
         rag_content = None
+        if section_id:
+            section_data = get_section_by_id(section_id)
+            if section_data:
+                section_title = section_data.get("section_title", section_title)
+                content = format_content_for_ui(section_data)
+                rag_content = f"Current Section: {section_title}\n\n{content}"
     
     # Build initial state for LangGraph agent
     initial_state: TutorState = {
