@@ -2,6 +2,37 @@
 
 import { motion } from "framer-motion";
 import { HelpCircle } from "lucide-react";
+import "katex/dist/katex.min.css";
+import dynamic from "next/dynamic";
+
+const InlineMath = dynamic(
+    () => import("react-katex").then((mod) => mod.InlineMath),
+    { ssr: false, loading: () => <span className="animate-pulse bg-white/10 rounded px-2">...</span> }
+);
+
+// Helper to parse text with inline LaTeX ($...$)
+const parseInlineLatex = (text: string): React.ReactNode => {
+    if (!text) return null;
+    const regex = /\$([^$]+)\$/g;
+    const parts: React.ReactNode[] = [];
+    let lastIndex = 0;
+    let match;
+    let key = 0;
+
+    while ((match = regex.exec(text)) !== null) {
+        if (match.index > lastIndex) {
+            parts.push(text.slice(lastIndex, match.index));
+        }
+        parts.push(<InlineMath key={key++}>{match[1]}</InlineMath>);
+        lastIndex = regex.lastIndex;
+    }
+
+    if (lastIndex < text.length) {
+        parts.push(text.slice(lastIndex));
+    }
+
+    return parts.length > 0 ? parts : text;
+};
 
 interface QuizCardProps {
     question: string;
@@ -46,8 +77,8 @@ export default function QuizCard({
                     </div>
                 </div>
 
-                {/* Question */}
-                <p className="text-xl text-white/90 leading-relaxed mb-4">{question}</p>
+                {/* Question with LaTeX support */}
+                <p className="text-xl text-white/90 leading-relaxed mb-4">{parseInlineLatex(question)}</p>
 
                 {/* Hint */}
                 <p className="text-sm text-white/40">
@@ -57,3 +88,4 @@ export default function QuizCard({
         </motion.div>
     );
 }
+

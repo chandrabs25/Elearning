@@ -2,6 +2,37 @@
 
 import { motion } from "framer-motion";
 import { CheckCircle2, Circle } from "lucide-react";
+import "katex/dist/katex.min.css";
+import dynamic from "next/dynamic";
+
+const InlineMath = dynamic(
+    () => import("react-katex").then((mod) => mod.InlineMath),
+    { ssr: false, loading: () => <span className="animate-pulse bg-white/10 rounded px-2">...</span> }
+);
+
+// Helper to parse text with inline LaTeX ($...$)
+const parseInlineLatex = (text: string): React.ReactNode => {
+    if (!text) return null;
+    const regex = /\$([^$]+)\$/g;
+    const parts: React.ReactNode[] = [];
+    let lastIndex = 0;
+    let match;
+    let key = 0;
+
+    while ((match = regex.exec(text)) !== null) {
+        if (match.index > lastIndex) {
+            parts.push(text.slice(lastIndex, match.index));
+        }
+        parts.push(<InlineMath key={key++}>{match[1]}</InlineMath>);
+        lastIndex = regex.lastIndex;
+    }
+
+    if (lastIndex < text.length) {
+        parts.push(text.slice(lastIndex));
+    }
+
+    return parts.length > 0 ? parts : text;
+};
 
 interface MCQCardProps {
     question: string;
@@ -36,12 +67,12 @@ export default function MCQCard({
                 </div>
             </div>
 
-            {/* Question */}
+            {/* Question with LaTeX support */}
             <p className="text-xl text-white/90 leading-relaxed mb-6 font-medium">
-                {question}
+                {parseInlineLatex(question)}
             </p>
 
-            {/* Options */}
+            {/* Options with LaTeX support */}
             <div className="space-y-3">
                 {options.map((option, index) => (
                     <motion.button
@@ -55,7 +86,7 @@ export default function MCQCard({
                             <Circle className="w-5 h-5 text-white/20 group-hover:text-purple-400 transition-colors" />
                         </div>
                         <span className="text-white/80 group-hover:text-white transition-colors">
-                            {option}
+                            {parseInlineLatex(option)}
                         </span>
                     </motion.button>
                 ))}
@@ -67,3 +98,4 @@ export default function MCQCard({
         </motion.div>
     );
 }
+

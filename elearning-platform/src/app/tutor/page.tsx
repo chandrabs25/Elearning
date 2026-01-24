@@ -41,6 +41,12 @@ interface CelebrationData {
     next_section_title?: string;
 }
 
+interface SuggestedAction {
+    label: string;
+    action: string;
+    primary?: boolean;
+}
+
 interface UISchema {
     layout: LayoutMode;
     panels: Panel[];
@@ -48,6 +54,7 @@ interface UISchema {
     next_prompt?: string;
     progress?: ProgressData;
     celebration?: CelebrationData;
+    suggested_actions?: SuggestedAction[];
 }
 
 interface ConversationContext {
@@ -261,20 +268,22 @@ export default function TutorV2Page() {
     };
 
     // Send message to tutor conversation endpoint
-    const sendTutorMessage = useCallback(async (message: string) => {
+    // isAction=true for button clicks (skips LLM on backend)
+    const sendTutorMessage = useCallback(async (message: string, isAction: boolean = false) => {
         if (!message.trim() || isProcessing) return;
 
         setIsProcessing(true);
 
         try {
+            // Build request body - use action for button clicks, message for free-form text
+            const body = isAction
+                ? { user_id: USER_ID, action: message, context }
+                : { user_id: USER_ID, message, context };
+
             const res = await fetch(`${BACKEND_URL}/api/tutor/converse`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    user_id: USER_ID,
-                    message,
-                    context,
-                }),
+                body: JSON.stringify(body),
             });
 
             if (!res.ok) throw new Error("Failed to process message");
@@ -637,6 +646,25 @@ export default function TutorV2Page() {
                     <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_white_1px,_transparent_1px)] bg-[size:40px_40px] opacity-[0.02]" />
                 </div>
             </main>
+
+            {/* Suggested Action Buttons - use isAction=true to skip LLM */}
+            {ui?.suggested_actions && ui.suggested_actions.length > 0 && (
+                <div className="flex justify-center gap-3 py-3 px-6 bg-black/20 backdrop-blur-sm border-t border-white/10">
+                    {ui.suggested_actions.map((action, idx) => (
+                        <button
+                            key={idx}
+                            onClick={() => sendTutorMessage(action.action, true)}
+                            disabled={isProcessing}
+                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${action.primary
+                                ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white hover:from-violet-500 hover:to-purple-500 shadow-lg shadow-violet-500/25'
+                                : 'bg-white/10 text-white/80 hover:bg-white/20 hover:text-white border border-white/20'
+                                } disabled:opacity-50 disabled:cursor-not-allowed`}
+                        >
+                            {action.label}
+                        </button>
+                    ))}
+                </div>
+            )}
 
             {/* Unified Input Bar - Always visible */}
             <InputBar

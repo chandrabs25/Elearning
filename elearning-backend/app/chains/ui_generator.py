@@ -40,9 +40,10 @@ class UISchema(BaseModel):
     layout: LayoutMode
     panels: list[PanelContent]
     input_placeholder: str = "Talk to me..."
-    next_prompt: str | None = None  # Suggested follow-up
+    next_prompt: str | None = None  # Suggested follow-up text
     progress: ProgressData | None = None  # Progress bar data
     celebration: CelebrationData | None = None  # Celebration modal data
+    suggested_actions: list[dict] = []  # Action buttons: [{"label": "Quiz Me", "action": "quiz", "primary": True}]
 
 
 def welcome_schema(user_name: str = None, last_section: dict = None) -> UISchema:

@@ -16,7 +16,7 @@ from app.graph.user_state import (
     get_completed_exercises,
     record_chat_interaction
 )
-from app.chains.intent import classify_intent, TutorIntent, extract_topic_from_add_request, extract_component_to_remove, is_open_book_request
+from app.chains.extractors import extract_topic_from_add_request, extract_component_to_remove, is_open_book_request
 from app.chains.content import (
     get_section_by_id,
     get_related_sections,
@@ -57,10 +57,24 @@ MASTERY_THRESHOLD = 70
 
 class ConversationRequest(BaseModel):
     user_id: str
-    message: str
+    message: str = ""  # Free-form text (uses LLM)
+    action: str | None = None  # Deterministic action from button click (skips LLM)
     pinned_left: str | None = None
     pinned_right: str | None = None
     context: dict = {}
+
+
+# Map action strings to intent values
+ACTION_TO_INTENT = {
+    "next": "navigate",
+    "previous": "navigate",
+    "quiz": "take_quiz",
+    "mcq": "generate_mcq",
+    "exercises": "show_exercises",
+    "continue": "continue_learning",
+    "summary": "show_summary",
+    "chat": "open_chat",
+}
 
 
 class ConversationResponse(BaseModel):
@@ -73,61 +87,74 @@ class ConversationResponse(BaseModel):
 async def converse(req: ConversationRequest):
     """
     Main conversation endpoint. Processes user message and returns UI schema.
+    Supports two modes:
+    - action: Deterministic button click (skips LLM, fast)
+    - message: Free-form text (uses LLM classifier)
     """
     # 1. Get or create user
     await get_or_create_user(req.user_id)
     user_state = await get_user_state(req.user_id)
     
-    # 2. Classify intent
+    # 2. Determine intent - check action first (skips LLM for button clicks)
     context = {**req.context}
-    intent = classify_intent(req.message, context)
     
-    # 3. Route to handler based on intent
-    if intent == TutorIntent.CONTINUE_LEARNING:
+    if req.action and req.action in ACTION_TO_INTENT:
+        # Deterministic action from button click - no LLM needed
+        intent = ACTION_TO_INTENT[req.action]
+        # Use action as message for handlers that need it
+        message = req.action if not req.message else req.message
+    else:
+        # Free-form text - use LLM classifier
+        from app.agents.intent_classifier import classify_intent_llm
+        intent = await classify_intent_llm(req.message, context)
+        message = req.message
+    
+    # 3. Route to handler based on intent (now uses string values)
+    if intent == "continue_learning":
         return await handle_continue(req.user_id, user_state, context)
     
-    elif intent == TutorIntent.START_TOPIC:
-        return await handle_start_topic(req.user_id, req.message, context)
+    elif intent == "start_topic":
+        return await handle_start_topic(req.user_id, message, context)
     
-    elif intent == TutorIntent.NAVIGATE:
-        return await handle_navigate(req.user_id, req.message, user_state, context)
+    elif intent == "navigate":
+        return await handle_navigate(req.user_id, message, user_state, context)
     
-    elif intent == TutorIntent.ASK_DERIVATION:
-        return await handle_derivation(req.user_id, req.message, user_state, context)
+    elif intent == "ask_derivation":
+        return await handle_derivation(req.user_id, message, user_state, context)
     
-    elif intent == TutorIntent.SHOW_SUMMARY:
+    elif intent == "show_summary":
         return await handle_summary(req.user_id, user_state)
     
-    elif intent == TutorIntent.ANSWER_QUESTION:
-        return await handle_answer(req.user_id, req.message, context)
+    elif intent == "answer_question":
+        return await handle_answer(req.user_id, message, context)
     
-    elif intent == TutorIntent.ADD_CONTENT:
-        return await handle_add_content(req.user_id, req.message, user_state, context)
+    elif intent == "add_content":
+        return await handle_add_content(req.user_id, message, user_state, context)
     
-    elif intent == TutorIntent.REMOVE_COMPONENT:
-        return await handle_remove_component(req.user_id, req.message, user_state, context)
+    elif intent == "remove_component":
+        return await handle_remove_component(req.user_id, message, user_state, context)
     
-    elif intent == TutorIntent.ADD_SUMMARY:
+    elif intent == "add_summary":
         return await handle_add_summary(req.user_id, user_state, context)
     
-    elif intent == TutorIntent.OPEN_CHAT:
-        return await handle_open_chat(req.user_id, req.message, user_state, context)
+    elif intent == "open_chat":
+        return await handle_open_chat(req.user_id, message, user_state, context)
 
-    elif intent == TutorIntent.TAKE_QUIZ:
-        return await handle_quiz_request(req.user_id, req.message, user_state, context)
+    elif intent == "take_quiz":
+        return await handle_quiz_request(req.user_id, message, user_state, context)
 
-    elif intent == TutorIntent.GENERATE_MCQ:
-        return await handle_mcq_request(req.user_id, req.message, user_state, context)
+    elif intent == "generate_mcq":
+        return await handle_mcq_request(req.user_id, message, user_state, context)
     
-    elif intent == TutorIntent.SHOW_EXERCISES:
-        return await handle_show_exercises(req.user_id, req.message, user_state, context)
+    elif intent == "show_exercises":
+        return await handle_show_exercises(req.user_id, message, user_state, context)
     
-    elif intent == TutorIntent.ANSWER_EXERCISE:
-        return await handle_exercise_answer(req.user_id, req.message, context)
+    elif intent == "answer_exercise":
+        return await handle_exercise_answer(req.user_id, message, context)
     
     else:
         # Default: treat as topic request
-        return await handle_start_topic(req.user_id, req.message, context)
+        return await handle_start_topic(req.user_id, message, context)
 
 
 @router.get("/tutor/init/{user_id}")
@@ -259,106 +286,93 @@ class ChatPanelResponse(BaseModel):
 @router.post("/tutor/chat", response_model=ChatPanelResponse)
 async def chat_panel_message(req: ChatPanelRequest):
     """
-    Handle messages sent from the ChatPanel.
-    Returns responses with rich content (math, diagrams, etc.).
+    Handle messages sent from the ChatPanel using LangGraph agent.
+    Uses Neo4j for prerequisite traversal and maintains conversation context.
     """
-    from groq import AsyncGroq
-    from app.config import settings
+    from app.agents.tutor_agent import tutor_agent, TutorState
+    from langchain_core.messages import HumanMessage, AIMessage
     
     section_id = req.context.get("current_section_id")
     section_title = req.context.get("current_section_title", "Gravitation")
-    
-    # Fetch full section content
-    section_content_text = ""
-    if section_id:
-        section = get_section_by_id(section_id)
-        if section:
-            section_content = format_content_for_ui(section)
-            # Convert content list to text for LLM context
-            content_parts = []
-            for item in section_content:
-                if isinstance(item, dict):
-                    if item.get("type") == "text":
-                        content_parts.append(item.get("text", ""))
-                    elif item.get("type") == "latex":
-                        content_parts.append(f"$${item.get('content', '')}$$")
-                    elif item.get("type") == "heading":
-                        content_parts.append(f"\n## {item.get('text', '')}\n")
-                    elif item.get("type") == "example_box":
-                        content_parts.append(f"\nExample: {item.get('question', '')}")
-                        if item.get("solution"):
-                            content_parts.append(f"Solution: {item['solution'].get('meta', '')}")
-                elif isinstance(item, str):
-                    content_parts.append(item)
-            section_content_text = "\n".join(content_parts)
-    
-    client = AsyncGroq(api_key=settings.groq_api_key)
     
     # Record chat interaction for mastery tracking
     mastery_result = None
     if section_id:
         mastery_result = await record_chat_interaction(req.user_id, section_id, "relevant")
     
-    # Build the system prompt with section content
-    context_str = f"The user is currently studying: {section_title}. " if section_title else ""
-    
-    content_context = ""
-    if section_content_text:
-        content_context = f"""
-
-Here is the textbook content for the current section:
----
-{section_content_text}
----
-Use this content to provide accurate, grounded answers. Reference specific concepts, formulas, and examples from the textbook when relevant.
-If the student asks something off-topic, briefly acknowledge it and gently guide them back to the current topic.
-"""
-    
-    system_prompt = f"""You are an AI tutor helping a student learn physics.
-{context_str}{content_context}
-When answering:
-- Be clear and educational
-- Use LaTeX for math equations (wrap with $$ for block equations)
-- Reference concepts from the textbook content provided above when applicable
-- Keep responses focused and digestible
-
-At the END of your response, include exactly 3 follow-up question suggestions that the student might want to ask next. These should be contextual to what you just explained and encourage deeper learning.
-
-Format the suggestions section like this:
----SUGGESTIONS---
-1. [First suggestion question]
-2. [Second suggestion question]  
-3. [Third suggestion question]
-"""
-    
-    # Prepare conversation history for LLM
-    messages = [{"role": "system", "content": system_prompt}]
-    for msg in req.history[-5:]:
+    # Convert history to LangChain messages
+    history_messages = []
+    for msg in req.history[-5:]:  # Last 5 messages for context
         content = msg.content if isinstance(msg.content, str) else str(msg.content)
-        messages.append({"role": msg.role, "content": content})
-    messages.append({"role": "user", "content": req.message})
+        if msg.role == "user":
+            history_messages.append(HumanMessage(content=content))
+        else:
+            history_messages.append(AIMessage(content=content))
     
-    # Call LLM for response
-    response = await client.chat.completions.create(
-        messages=messages,
-        model="moonshotai/kimi-k2-instruct-0905"
-    )
-    response_text = response.choices[0].message.content
+    # Add current message
+    history_messages.append(HumanMessage(content=req.message))
     
-    # Parse response and extract suggestions
-    main_content, suggestions = parse_response_with_suggestions(response_text)
+    # Build initial state for LangGraph agent
+    initial_state: TutorState = {
+        "messages": history_messages,
+        "user_id": req.user_id,
+        "current_concept_id": section_id or "7.3",
+        "current_concept_title": section_title,
+        "concept_content": None,
+        "prerequisites": [],
+        "needs_prerequisite": False,
+        "prerequisite_chain": [],
+        "confusion_detected": False
+    }
     
-    # Parse main content for rich content items
-    content_items = parse_response_to_content(main_content)
+    try:
+        # Run the LangGraph agent
+        final_state = await tutor_agent.ainvoke(initial_state)
+        
+        # Extract the last AI message
+        ai_messages = [m for m in final_state.get("messages", []) if isinstance(m, AIMessage)]
+        response_text = ai_messages[-1].content if ai_messages else "I'm here to help! What would you like to know?"
+        
+        # Parse response for rich content
+        main_content, suggestions = parse_response_with_suggestions(response_text)
+        content_items = parse_response_to_content(main_content)
+        
+        # Generate contextual suggestions based on state
+        if not suggestions or suggestions == ["Can you explain this with an example?", "What's the key formula here?", "Quiz me on this!"]:
+            prereq_chain = final_state.get("prerequisite_chain", [])
+            if prereq_chain:
+                suggestions = [
+                    f"Tell me more about {prereq_chain[-1]}",
+                    f"How does this connect to {section_title}?",
+                    "I understand now, continue with the main topic"
+                ]
+            else:
+                suggestions = [
+                    "Can you show me an example?",
+                    "What are the key formulas?",
+                    "Quiz me on this topic"
+                ]
+        
+        return ChatPanelResponse(
+            message=ChatMessage(
+                role="assistant",
+                content=content_items
+            ),
+            suggestions=suggestions[:3],
+            mastery_update=mastery_result
+        )
     
-    return ChatPanelResponse(
-        message=ChatMessage(
-            role="assistant",
-            content=content_items
-        ),
-        suggestions=suggestions,
-        mastery_update=mastery_result
-    )
+    except Exception as e:
+        print(f"LangGraph agent error: {e}")
+        # Fallback to simple response
+        return ChatPanelResponse(
+            message=ChatMessage(
+                role="assistant",
+                content=[{"type": "text", "text": f"I encountered an issue processing your question. Could you please rephrase it? (Error: {str(e)})"}]
+            ),
+            suggestions=["Try asking differently", "Explain the concept", "Show an example"],
+            mastery_update=mastery_result
+        )
 
 
 def parse_response_to_content(text: str) -> list:
@@ -647,41 +661,23 @@ async def handle_answer(user_id: str, answer: str, context: dict) -> Conversatio
             }
         )
 
-    # 2. Handle Open-Ended Problem Solving (Quiz)
+    # 2. Handle Open-Ended Problem Solving (Quiz) - Use agent
     else:
-        from groq import AsyncGroq
-        from app.config import settings
+        from app.agents.tutor_agent import evaluate_quiz_answer
 
-        solution = context.get("solution_meta") or context.get("solution_latex")
+        solution = context.get("solution_meta") or context.get("solution_latex") or ""
+        question = context.get("question", "")
         
-        client = AsyncGroq(api_key=settings.groq_api_key)
-        
-        prompt = f"""
-        You are a physics tutor evaluating a student's answer.
-        
-        Question: {context.get('question')}
-        Correct Solution Logic: {solution}
-        
-        Student Answer: {answer}
-        
-        Evaluate the student's answer. 
-        - If they described the correct process/logic (even without math), mark it CORRECT.
-        - If they are wrong, explain why.
-        - Be encouraging but strict on physics principles.
-        
-        Response format: 
-        Status: [CORRECT / PARTIAL / WRONG]
-        Feedback: [Your feedback here]
-        """
-        
-        evaluation = await client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile"
+        # Use agent to evaluate
+        evaluation = await evaluate_quiz_answer(
+            question=question,
+            solution=solution,
+            student_answer=answer
         )
-        eval_text = evaluation.choices[0].message.content
         
-        is_correct = "Status: CORRECT" in eval_text
-        is_partial = "PARTIAL" in eval_text
+        is_correct = evaluation["is_correct"]
+        is_partial = evaluation["is_partial"]
+        feedback_msg = evaluation["feedback"]
         
         if is_correct:
             delta = 15
@@ -694,8 +690,6 @@ async def handle_answer(user_id: str, answer: str, context: dict) -> Conversatio
             status = "error"
         
         result = await update_mastery(user_id, concept_id, delta)
-        
-        feedback_msg = eval_text.replace("Status: CORRECT", "").replace("Status: WRONG", "").replace("Status: PARTIAL", "").strip()
         
         # Check for section completion
         celebration = None
@@ -994,45 +988,25 @@ async def handle_show_exercises(user_id: str, message: str, user_state: dict, co
 
 
 async def handle_exercise_answer(user_id: str, answer: str, context: dict) -> ConversationResponse:
-    """Handle answer to an exercise."""
-    from groq import AsyncGroq
-    from app.config import settings
+    """Handle answer to an exercise using agent-based evaluation."""
+    from app.agents.tutor_agent import evaluate_quiz_answer
     
     exercise_label = context.get("exercise_label")
     section_id = context.get("section_id", "7.1")
     exercise_question = context.get("exercise_question", "")
     is_bonus = context.get("is_bonus", True)
     
-    # Use LLM to evaluate the answer
-    client = AsyncGroq(api_key=settings.groq_api_key)
-    
-    prompt = f"""
-    You are a physics tutor evaluating a student's approach to solving a problem.
-    
-    Exercise: {exercise_label}
-    Question: {exercise_question}
-    
-    Student's Approach: {answer}
-    
-    Evaluate if the student's approach/reasoning is correct.
-    - Focus on whether they understand the physics concepts
-    - Check if their approach would lead to the correct answer
-    - Be encouraging but accurate
-    
-    Response format:
-    Status: [CORRECT / PARTIAL / WRONG]
-    Feedback: [Your detailed feedback]
-    """
-    
     try:
-        evaluation = await client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile"
+        # Use agent to evaluate
+        evaluation = await evaluate_quiz_answer(
+            question=exercise_question,
+            solution="",  # No solution available, evaluate based on physics principles
+            student_answer=answer
         )
-        eval_text = evaluation.choices[0].message.content
         
-        is_correct = "Status: CORRECT" in eval_text
-        is_partial = "PARTIAL" in eval_text
+        is_correct = evaluation["is_correct"]
+        is_partial = evaluation["is_partial"]
+        feedback = evaluation["feedback"]
         
         # Record attempt and update mastery
         result = await record_exercise_attempt(
@@ -1053,7 +1027,7 @@ async def handle_exercise_answer(user_id: str, answer: str, context: dict) -> Co
             status = "error"
             msg_prefix = "❌ Not quite right. "
         
-        feedback_msg = msg_prefix + eval_text.replace("Status: CORRECT", "").replace("Status: WRONG", "").replace("Status: PARTIAL", "").replace("Feedback:", "").strip()
+        feedback_msg = msg_prefix + feedback
         
         # Check for celebration
         celebration = None
@@ -1468,22 +1442,41 @@ async def _build_explanation_response(
     # Build guided prompt based on context
     has_examples = len(example_problems) > 0 if example_problems else False
     
+    # Build suggested actions for guided learning flow
+    suggested_actions = []
+    next_id = get_next_section_id(section_id)
+    
     if current_mastery >= MASTERY_THRESHOLD:
-        # Already mastered
+        # Already mastered - suggest next section
         next_prompt = "🎉 Section mastered! Type 'next' to continue or explore more."
         input_placeholder = "Type 'next' to continue, or ask a question..."
+        suggested_actions = [
+            {"label": "🎉 Next Section", "action": "next", "primary": True},
+            {"label": "More Practice", "action": "quiz"},
+            {"label": "Review Content", "action": "continue"}
+        ]
     elif current_mastery > 0:
-        # In progress
+        # In progress - suggest quiz to gain mastery
         next_prompt = f"📊 {current_mastery}% mastery (need 70%). Type 'quiz me' to practice!"
         input_placeholder = "Type 'quiz me' to test yourself, or ask a question..."
+        suggested_actions = [
+            {"label": "Take Quiz", "action": "quiz", "primary": True},
+            {"label": "MCQs", "action": "mcq"},
+            {"label": "Skip to Next", "action": "next"}
+        ]
     else:
-        # Just started
+        # Just started - encourage learning or quiz
         if has_examples:
             next_prompt = "Ready to test your understanding? Type 'quiz me' or ask a question."
             input_placeholder = "Type 'quiz me' to practice, or ask about the topic..."
         else:
             next_prompt = "Test yourself! Type 'mcq' for a question, or ask me anything."
             input_placeholder = "Type 'mcq' to test yourself, or ask a question..."
+        suggested_actions = [
+            {"label": "Ask a Question", "action": "chat"},
+            {"label": "Quiz Me", "action": "quiz"},
+            {"label": "Skip Section", "action": "next"}
+        ]
     
     # Show exercises panel alongside content if requested
     if exercises and show_exercises:
@@ -1507,9 +1500,10 @@ async def _build_explanation_response(
             progress=progress
         )
     
-    # Add guided prompts to UI
+    # Add guided prompts and actions to UI
     ui.next_prompt = next_prompt
     ui.input_placeholder = input_placeholder
+    ui.suggested_actions = suggested_actions
     
     return ConversationResponse(
         ui=ui,
@@ -1641,3 +1635,157 @@ async def text_to_speech(request: TTSRequest):
         print(f"TTS Exception: {e}")
         # Return 204 No Content to avoid blocking UI
         return Response(content=b"", status_code=204)
+
+
+# === Tutor Navigation & Evaluation Endpoints (moved from tutor.py) ===
+
+import json
+import os
+
+GRAVITY_JSON_PATH = "../elearning-platform/src/data/chapters/gravity.json"
+
+def get_gravity_content():
+    """Load gravity.json content."""
+    try:
+        with open(GRAVITY_JSON_PATH, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        if os.path.exists("gravity.json"):
+            with open("gravity.json", "r") as f:
+                return json.load(f)
+        raise HTTPException(status_code=500, detail="Content file not found")
+
+
+class NextStepRequest(BaseModel):
+    user_id: str
+    concept_id: str | None = None
+
+
+class Component(BaseModel):
+    type: str
+    props: dict = {}
+
+
+class UINextResponse(BaseModel):
+    schema_version: str = "1.0"
+    components: list[Component]
+
+
+@router.post("/tutor/next", response_model=UINextResponse)
+async def next_step(req: NextStepRequest):
+    """Get next section content based on concept ID."""
+    from app.graph.client import neo4j_client
+    
+    query = ""
+    params = {}
+    
+    if req.concept_id:
+        query = """
+        MATCH (c:Concept {id: $id})
+        RETURN c
+        """
+        params = {"id": req.concept_id}
+    else:
+        query = """
+        MATCH (c:Concept {id: "7.1"})
+        RETURN c
+        """
+    
+    results = await neo4j_client.execute_read(query, **params)
+    if not results:
+        raise HTTPException(status_code=404, detail="Concept not found")
+    
+    concept = results[0]["c"]
+    section_id = concept.get("sectionId", "7.1")
+    
+    data = get_gravity_content()
+    sections = data.get("sections", [])
+    
+    target_section = next((s for s in sections if s["section_id"] == section_id), None)
+    
+    if not target_section:
+        return UINextResponse(components=[
+            Component(type="h1", props={"children": concept.get("title")}),
+            Component(type="p", props={"children": "Content coming soon..."})
+        ])
+
+    components = []
+    components.append(Component(type="h1", props={"children": target_section.get("section_title")}))
+    
+    for item in target_section.get("content", []):
+        if item["type"] == "text":
+            components.append(Component(type="p", props={"children": item["body"]}))
+        elif item["type"] == "list_item":
+            components.append(Component(type="li", props={"children": f"{item.get('label', '')} {item.get('body', '')}"}))
+        elif item["type"] == "diagram":
+            components.append(Component(type="diagram", props={
+                "figure": item.get("figure_number"),
+                "caption": item.get("meta")
+            }))
+        elif item["type"] == "derivation":
+            components.append(Component(type="latex", props={"content": item.get("latex")}))
+    
+    return UINextResponse(components=components)
+
+
+class ExerciseEvaluationRequest(BaseModel):
+    user_id: str
+    exercise_label: str
+    student_answer: str
+    is_bonus: bool = True
+
+
+class ExerciseEvaluationResponse(BaseModel):
+    is_correct: bool
+    score: int
+    feedback: str
+    correct_solution: str
+    comparison: str
+    mastery_change: int
+    new_mastery: int
+
+
+@router.post("/tutor/evaluate-exercise", response_model=ExerciseEvaluationResponse)
+async def evaluate_exercise(request: ExerciseEvaluationRequest):
+    """Evaluate student answer against exercise solution using LangGraph agent."""
+    from app.agents.tutor_agent import evaluate_exercise_with_agent
+    from app.chains.content import get_exercise_with_solution
+    
+    exercise = get_exercise_with_solution(request.exercise_label)
+    if not exercise:
+        raise HTTPException(status_code=404, detail=f"Exercise {request.exercise_label} not found")
+    
+    if not exercise.get("solution"):
+        raise HTTPException(status_code=404, detail=f"Solution not available for exercise {request.exercise_label}")
+    
+    result = await evaluate_exercise_with_agent(
+        user_id=request.user_id,
+        exercise_label=request.exercise_label,
+        student_answer=request.student_answer
+    )
+    
+    try:
+        mastery_result = await record_exercise_attempt(
+            user_id=request.user_id,
+            exercise_label=request.exercise_label,
+            section_id="EXERCISES",
+            is_correct=result["is_correct"],
+            is_bonus=request.is_bonus
+        )
+        mastery_change = mastery_result.get("mastery_change", 0)
+        new_mastery = mastery_result.get("new_level", 0)
+    except Exception as e:
+        print(f"Error recording exercise: {e}")
+        mastery_change = 0
+        new_mastery = 0
+    
+    return ExerciseEvaluationResponse(
+        is_correct=result["is_correct"],
+        score=result["score"],
+        feedback=result["feedback"],
+        correct_solution=exercise["solution"],
+        comparison=result["comparison"],
+        mastery_change=mastery_change,
+        new_mastery=new_mastery
+    )
+

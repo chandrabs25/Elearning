@@ -2,6 +2,41 @@
 
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import "katex/dist/katex.min.css";
+import dynamic from "next/dynamic";
+
+const InlineMath = dynamic(
+    () => import("react-katex").then((mod) => mod.InlineMath),
+    { ssr: false, loading: () => <span className="animate-pulse bg-white/10 rounded px-2">...</span> }
+);
+const BlockMath = dynamic(
+    () => import("react-katex").then((mod) => mod.BlockMath),
+    { ssr: false, loading: () => <div className="animate-pulse h-8 bg-white/10 rounded" /> }
+);
+
+// Helper to parse text with inline LaTeX ($...$)
+const parseInlineLatex = (text: string): React.ReactNode => {
+    if (!text) return null;
+    const regex = /\$([^$]+)\$/g;
+    const parts: React.ReactNode[] = [];
+    let lastIndex = 0;
+    let match;
+    let key = 0;
+
+    while ((match = regex.exec(text)) !== null) {
+        if (match.index > lastIndex) {
+            parts.push(text.slice(lastIndex, match.index));
+        }
+        parts.push(<InlineMath key={key++}>{match[1]}</InlineMath>);
+        lastIndex = regex.lastIndex;
+    }
+
+    if (lastIndex < text.length) {
+        parts.push(text.slice(lastIndex));
+    }
+
+    return parts.length > 0 ? parts : text;
+};
 
 interface Exercise {
     label: string;
@@ -123,14 +158,14 @@ export default function ExercisePanel({
                             transition={{ delay: index * 0.05 }}
                             onClick={() => handleSelectExercise(exercise)}
                             className={`w-full text-left p-3 rounded-xl transition-all ${selectedExercise?.label === exercise.label
-                                    ? "bg-purple-500/20 border border-purple-500/30"
-                                    : "bg-white/5 hover:bg-white/10 border border-transparent"
+                                ? "bg-purple-500/20 border border-purple-500/30"
+                                : "bg-white/5 hover:bg-white/10 border border-transparent"
                                 }`}
                         >
                             <div className="flex items-center justify-between">
                                 <span className={`text-sm font-medium ${selectedExercise?.label === exercise.label
-                                        ? "text-purple-400"
-                                        : "text-white/80"
+                                    ? "text-purple-400"
+                                    : "text-white/80"
                                     }`}>
                                     {exercise.label}
                                 </span>
@@ -163,10 +198,10 @@ export default function ExercisePanel({
                                 {/* Question */}
                                 <div className="bg-white/5 rounded-xl p-4 border border-white/10">
                                     <h4 className="text-purple-400 font-medium mb-2">{selectedExercise.label}</h4>
-                                    <p className="text-white/80 leading-relaxed">{selectedExercise.question}</p>
+                                    <p className="text-white/80 leading-relaxed">{parseInlineLatex(selectedExercise.question)}</p>
 
                                     {selectedExercise.body && (
-                                        <p className="text-white/60 mt-2">{selectedExercise.body}</p>
+                                        <p className="text-white/60 mt-2">{parseInlineLatex(selectedExercise.body)}</p>
                                     )}
 
                                     {/* Sub Questions */}
@@ -175,7 +210,7 @@ export default function ExercisePanel({
                                             {selectedExercise.sub_questions.map((sq, i) => (
                                                 <div key={i} className="text-sm">
                                                     <span className="text-purple-400 font-medium">{sq.label}</span>
-                                                    <span className="text-white/60 ml-2">{sq.body}</span>
+                                                    <span className="text-white/60 ml-2">{parseInlineLatex(sq.body)}</span>
                                                 </div>
                                             ))}
                                         </div>
@@ -205,8 +240,8 @@ export default function ExercisePanel({
                                         initial={{ opacity: 0, scale: 0.95 }}
                                         animate={{ opacity: 1, scale: 1 }}
                                         className={`rounded-xl p-4 border ${evaluationResult.isCorrect
-                                                ? "bg-emerald-500/10 border-emerald-500/30"
-                                                : "bg-orange-500/10 border-orange-500/30"
+                                            ? "bg-emerald-500/10 border-emerald-500/30"
+                                            : "bg-orange-500/10 border-orange-500/30"
                                             }`}
                                     >
                                         {/* Score Header */}
@@ -225,8 +260,8 @@ export default function ExercisePanel({
                                                 </div>
                                             </div>
                                             <div className={`px-2 py-1 rounded text-xs font-medium ${evaluationResult.masteryChange > 0
-                                                    ? "bg-green-500/20 text-green-400"
-                                                    : "bg-red-500/20 text-red-400"
+                                                ? "bg-green-500/20 text-green-400"
+                                                : "bg-red-500/20 text-red-400"
                                                 }`}>
                                                 {evaluationResult.masteryChange > 0 ? "+" : ""}{evaluationResult.masteryChange} mastery
                                             </div>

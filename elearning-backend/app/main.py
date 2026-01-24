@@ -5,7 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.graph.client import neo4j_client
 from app.api import chat
-from app.api import tutor
 from app.api import converse
 
 
@@ -44,7 +43,6 @@ app.add_middleware(
 
 # Routers
 app.include_router(chat.router, prefix="/api")
-app.include_router(tutor.router, prefix="/api")
 app.include_router(converse.router, prefix="/api")
 
 @app.get("/health")
