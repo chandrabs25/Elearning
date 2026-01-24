@@ -86,14 +86,14 @@ export default function WelcomeCard({
                             <p className="text-white/50">{subtitle}</p>
                         </div>
                     </div>
-                    
+
                     {/* Continue Button - Context Aware (Blue for action) */}
                     {lastSection && (
                         <motion.button
                             initial={{ opacity: 0, x: 20 }}
                             animate={{ opacity: 1, x: 0 }}
                             transition={{ delay: 0.3 }}
-                            onClick={() => onAction?.(`teach me ${lastSection.id}`)}
+                            onClick={() => onAction?.(`start:${lastSection.id}`)}
                             className="flex-shrink-0 flex items-center gap-3 px-4 py-3 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 hover:border-blue-500/50 rounded-xl transition-all group"
                         >
                             <PlayCircle className="w-5 h-5 text-blue-400" />
@@ -114,11 +114,11 @@ export default function WelcomeCard({
                         <BookOpen className="w-5 h-5 text-white/40 flex-shrink-0 mt-0.5" />
                         <div>
                             <p className="text-white/60 text-sm leading-relaxed mb-2">
-                                This AI tutor is built on <span className="text-white/80 font-medium">Chapter 7: Gravitation</span> from 
+                                This AI tutor is built on <span className="text-white/80 font-medium">Chapter 7: Gravitation</span> from
                                 the <span className="text-white/80">Class 11 NCERT Physics</span> textbook.
                             </p>
                             <p className="text-white/40 text-xs">
-                                The interface uses <span className="text-white/60">generative UI</span> — it adapts dynamically based on your commands. 
+                                The interface uses <span className="text-white/60">generative UI</span> — it adapts dynamically based on your commands.
                                 Type natural language to navigate, test yourself, or chat with AI.
                             </p>
                         </div>
@@ -133,7 +133,7 @@ export default function WelcomeCard({
                             Command Reference
                         </span>
                     </div>
-                    
+
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                         {COMMAND_CATEGORIES.map((cat, catIndex) => (
                             <motion.div
@@ -152,11 +152,10 @@ export default function WelcomeCard({
                                             key={item.cmd}
                                             onClick={() => item.clickable && onAction?.(item.cmd)}
                                             disabled={!item.clickable}
-                                            className={`w-full text-left p-2 rounded-lg transition-all ${
-                                                item.clickable
+                                            className={`w-full text-left p-2 rounded-lg transition-all ${item.clickable
                                                     ? "hover:bg-white/5 cursor-pointer"
                                                     : "cursor-default opacity-70"
-                                            }`}
+                                                }`}
                                         >
                                             <code className="text-white/70 text-xs font-mono block">
                                                 {item.cmd}
@@ -183,7 +182,7 @@ export default function WelcomeCard({
                                     initial={{ opacity: 0, x: -10 }}
                                     animate={{ opacity: 1, x: 0 }}
                                     transition={{ delay: 0.3 + i * 0.03 }}
-                                    onClick={() => onAction?.(`teach me ${topic.title}`)}
+                                    onClick={() => onAction?.(`start:${topic.id}`)}
                                     className="group flex items-center gap-3 p-3 bg-white/5 hover:bg-white/10 rounded-xl border border-white/5 hover:border-white/20 transition-all duration-200"
                                 >
                                     <span className="text-white/40 font-mono text-xs">

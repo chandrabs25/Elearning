@@ -623,7 +623,7 @@ export default function TutorV2Page() {
                                     index={index}
                                     totalPanels={ui.panels.length}
                                     layout={ui.layout}
-                                    onAction={sendTutorMessage}
+                                    onAction={(action) => sendTutorMessage(action, true)}
                                     calculatedWidth={ui.layout === "dynamic" ? calculatePanelWidth(panel, ui.panels) : undefined}
                                     isFocused={focusedPanelIndex === index}
                                     onFocus={() => setFocusedPanelIndex(index)}

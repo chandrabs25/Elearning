@@ -65,16 +65,59 @@ class ConversationRequest(BaseModel):
 
 
 # Map action strings to intent values
+# Format: "action" -> "intent" for simple mappings
+# Prefix-based actions (e.g., "start:7.3") are handled in action_check below
 ACTION_TO_INTENT = {
     "next": "navigate",
     "previous": "navigate",
     "quiz": "take_quiz",
+    "quiz me": "take_quiz",
+    "open book quiz": "take_quiz_open",
     "mcq": "generate_mcq",
+    "give me MCQs": "generate_mcq",
+    "open book MCQs": "generate_mcq_open",
     "exercises": "show_exercises",
+    "show exercises": "show_exercises",
     "continue": "continue_learning",
     "summary": "show_summary",
     "chat": "open_chat",
+    "open chat": "open_chat",
+    "explain this": "explain_content",
+    "show derivation": "show_derivation",
+    "help me": "open_chat",
+    "show my progress": "show_progress",
+    "remove chapter sections": "remove_component",
+    "show chapters": "show_chapters",
+    "focus": "focus_view",
 }
+
+# Prefix-based actions that bypass LLM (e.g., "start:7.3", "goto:7.5")
+ACTION_PREFIXES = {
+    "start:": "start_topic",      # start:<section_id_or_title>
+    "teach:": "start_topic",      # teach:<topic>
+    "goto:": "navigate_to",       # goto:<section_id>
+}
+
+
+def parse_action(action_str: str) -> tuple[str | None, str | None]:
+    """
+    Parse an action string to extract intent and payload.
+    Returns (intent, payload) or (None, None) if not a recognized action.
+    """
+    if not action_str:
+        return None, None
+    
+    # Check exact match first
+    if action_str in ACTION_TO_INTENT:
+        return ACTION_TO_INTENT[action_str], action_str
+    
+    # Check prefix-based actions
+    for prefix, intent in ACTION_PREFIXES.items():
+        if action_str.startswith(prefix):
+            payload = action_str[len(prefix):]
+            return intent, payload
+    
+    return None, None
 
 
 class ConversationResponse(BaseModel):
@@ -97,12 +140,19 @@ async def converse(req: ConversationRequest):
     
     # 2. Determine intent - check action first (skips LLM for button clicks)
     context = {**req.context}
+    action_payload = None
     
-    if req.action and req.action in ACTION_TO_INTENT:
-        # Deterministic action from button click - no LLM needed
-        intent = ACTION_TO_INTENT[req.action]
-        # Use action as message for handlers that need it
-        message = req.action if not req.message else req.message
+    if req.action:
+        # Try to parse as a structured action (no LLM needed)
+        intent, action_payload = parse_action(req.action)
+        if intent:
+            # Use payload for handlers, fallback to action string
+            message = action_payload if action_payload else req.action
+        else:
+            # Unknown action, treat as message (uses LLM)
+            from app.agents.intent_classifier import classify_intent_llm
+            intent = await classify_intent_llm(req.action, context)
+            message = req.action
     else:
         # Free-form text - use LLM classifier
         from app.agents.intent_classifier import classify_intent_llm
@@ -151,6 +201,40 @@ async def converse(req: ConversationRequest):
     
     elif intent == "answer_exercise":
         return await handle_exercise_answer(req.user_id, message, context)
+    
+    elif intent == "navigate_to":
+        # Direct navigation to a section (from goto: action)
+        return await handle_navigate(req.user_id, f"go to {message}", user_state, context)
+    
+    elif intent == "explain_content":
+        # Explain current section content
+        return await handle_answer(req.user_id, "explain the current section in detail", context)
+    
+    elif intent == "show_derivation":
+        # Show derivation for current section
+        return await handle_derivation(req.user_id, "show derivation", user_state, context)
+    
+    elif intent == "show_progress":
+        # Show user progress/mastery
+        return await handle_show_progress(req.user_id, user_state, context)
+    
+    elif intent == "show_chapters":
+        # Add chapter sections panel
+        return await handle_add_content(req.user_id, "show chapters", user_state, context)
+    
+    elif intent == "focus_view":
+        # Remove extra panels, focus on main content
+        return await handle_remove_component(req.user_id, "focus", user_state, context)
+    
+    elif intent == "take_quiz_open":
+        # Open-book quiz (content visible)
+        context["open_book"] = True
+        return await handle_quiz_request(req.user_id, message, user_state, context)
+    
+    elif intent == "generate_mcq_open":
+        # Open-book MCQs (content visible)
+        context["open_book"] = True
+        return await handle_mcq_request(req.user_id, message, user_state, context)
     
     else:
         # Default: treat as topic request
@@ -589,6 +673,65 @@ async def handle_summary(user_id: str, user_state: dict) -> ConversationResponse
     return ConversationResponse(
         ui=summary_schema(mastery, weak),
         conversation_context={"showing_summary": True}
+    )
+
+
+async def handle_show_progress(user_id: str, user_state: dict, context: dict) -> ConversationResponse:
+    """Handle show progress request - displays section mastery overview."""
+    # Get progress data
+    toc = get_table_of_contents()
+    section_ids = [item["id"] for item in toc if not item["id"].startswith("SUMMARY") and item["id"] not in ["Points to ponder", "Exercises", "PHYSICAL_QUANTITIES_TABLE", "POINTS_TO_PONDER"]]
+    
+    # Build sections progress
+    sections_progress = []
+    total_mastery = 0
+    
+    for section_id in section_ids:
+        mastery = await get_section_mastery(user_id, section_id)
+        title = get_section_title(section_id) or section_id
+        sections_progress.append({
+            "id": section_id,
+            "title": title,
+            "mastery": mastery,
+            "completed": mastery >= 70
+        })
+        total_mastery += mastery
+    
+    avg_mastery = total_mastery / len(section_ids) if section_ids else 0
+    
+    # Create progress panel
+    progress_data = ProgressData(
+        lifetime_mastery=avg_mastery,
+        current_section_id=context.get("current_section"),
+        current_section_mastery=0,
+        sections_progress=sections_progress
+    )
+    
+    ui = UISchema(
+        layout="focus",
+        panels=[
+            PanelContent(
+                type="ProgressCard",
+                props={
+                    "title": "Your Progress",
+                    "sections": sections_progress,
+                    "lifetime_mastery": avg_mastery
+                },
+                role="primary",
+                animation="fadeIn"
+            )
+        ],
+        input_placeholder="What would you like to learn next?",
+        progress=progress_data,
+        suggested_actions=[
+            {"label": "Continue Learning", "action": "continue", "primary": True},
+            {"label": "Practice Weak Areas", "action": "exercises"},
+        ]
+    )
+    
+    return ConversationResponse(
+        ui=ui,
+        conversation_context={"showing_progress": True}
     )
 
 

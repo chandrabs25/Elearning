@@ -4,16 +4,22 @@ import os
 from functools import lru_cache
 
 
-GRAVITY_JSON_PATH = "../elearning-platform/src/data/chapters/gravity.json"
+# Path to gravity.json - works in Docker (/app/data/) and locally
+GRAVITY_JSON_PATH = "/app/data/gravity.json"
 
 
 @lru_cache(maxsize=1)
 def load_gravity_content() -> dict:
     """Load and cache the gravity chapter content."""
     paths_to_try = [
-        GRAVITY_JSON_PATH,
-        "gravity.json",
-        os.path.join(os.path.dirname(__file__), "../../data/gravity.json")
+        # Docker container path (absolute)
+        "/app/data/gravity.json",
+        # Relative to this file (local development)
+        os.path.join(os.path.dirname(__file__), "../../data/gravity.json"),
+        # Original frontend path (local development fallback)
+        "../elearning-platform/src/data/chapters/gravity.json",
+        # Current directory
+        "data/gravity.json",
     ]
     
     for path in paths_to_try:
@@ -21,7 +27,7 @@ def load_gravity_content() -> dict:
             with open(path, "r") as f:
                 return json.load(f)
     
-    raise FileNotFoundError("gravity.json not found")
+    raise FileNotFoundError(f"gravity.json not found in any of: {paths_to_try}")
 
 
 def get_section_by_id(section_id: str) -> dict | None:
