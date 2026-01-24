@@ -33,7 +33,7 @@ export default function NavigationMap({
     onAction,
 }: NavigationMapProps) {
     return (
-        <div className="h-full flex flex-col bg-neutral-900/50 rounded-2xl border border-white/5 overflow-hidden">
+        <div className="h-full max-h-[70vh] flex flex-col bg-neutral-900/50 rounded-2xl border border-white/5 overflow-hidden">
             {/* Header */}
             <div className="flex-shrink-0 flex items-center gap-3 p-4 border-b border-white/5">
                 <div className="p-2 bg-white/5 rounded-lg">
@@ -52,7 +52,7 @@ export default function NavigationMap({
                     const isCompleted = section.completed || (section.mastery && section.mastery >= 70);
                     const isNext = section.relation === "next";
                     const isPrevious = section.relation === "previous";
-                    
+
                     return (
                         <motion.button
                             key={section.id}
@@ -62,8 +62,8 @@ export default function NavigationMap({
                             onClick={() => onAction?.(`teach me ${section.id}`)}
                             className={`
                                 group flex items-center gap-2 w-full p-3 rounded-xl transition-all duration-200
-                                ${isCurrent 
-                                    ? "bg-blue-500/10 border border-blue-500/30" 
+                                ${isCurrent
+                                    ? "bg-blue-500/10 border border-blue-500/30"
                                     : "hover:bg-white/5 border border-transparent"
                                 }
                             `}
@@ -82,12 +82,11 @@ export default function NavigationMap({
                             {/* Section Info */}
                             <div className="flex-1 min-w-0 text-left">
                                 <div className="flex items-center gap-2">
-                                    <span className={`font-mono text-xs ${
-                                        isCurrent ? "text-blue-400" : "text-white/40"
-                                    }`}>
+                                    <span className={`font-mono text-xs ${isCurrent ? "text-blue-400" : "text-white/40"
+                                        }`}>
                                         {section.id}
                                     </span>
-                                    
+
                                     {/* Relation badge - context aware */}
                                     {isNext && (
                                         <span className="text-[10px] px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 rounded">
@@ -100,25 +99,23 @@ export default function NavigationMap({
                                         </span>
                                     )}
                                 </div>
-                                <p className={`text-sm truncate ${
-                                    isCurrent ? "text-white" : "text-white/60 group-hover:text-white/80"
-                                }`}>
+                                <p className={`text-sm truncate ${isCurrent ? "text-white" : "text-white/60 group-hover:text-white/80"
+                                    }`}>
                                     {section.title}
                                 </p>
-                                
+
                                 {/* Mastery bar - context-aware colors */}
                                 {section.mastery !== undefined && section.mastery > 0 && (
                                     <div className="mt-1.5 flex items-center gap-2">
                                         <div className="flex-1 h-1 bg-white/10 rounded-full overflow-hidden">
-                                            <div 
+                                            <div
                                                 className={`h-full rounded-full transition-all ${getMasteryColor(section.mastery)}`}
                                                 style={{ width: `${section.mastery}%` }}
                                             />
                                         </div>
-                                        <span className={`text-[10px] w-6 ${
-                                            section.mastery >= 70 ? "text-emerald-400" :
-                                            section.mastery >= 40 ? "text-amber-400" : "text-white/30"
-                                        }`}>
+                                        <span className={`text-[10px] w-6 ${section.mastery >= 70 ? "text-emerald-400" :
+                                                section.mastery >= 40 ? "text-amber-400" : "text-white/30"
+                                            }`}>
                                             {section.mastery}%
                                         </span>
                                     </div>
@@ -126,11 +123,10 @@ export default function NavigationMap({
                             </div>
 
                             {/* Arrow */}
-                            <ChevronRight className={`w-4 h-4 flex-shrink-0 transition-all ${
-                                isCurrent 
-                                    ? "text-blue-400" 
+                            <ChevronRight className={`w-4 h-4 flex-shrink-0 transition-all ${isCurrent
+                                    ? "text-blue-400"
                                     : "text-white/20 group-hover:text-white/40 group-hover:translate-x-0.5"
-                            }`} />
+                                }`} />
                         </motion.button>
                     );
                 })}
