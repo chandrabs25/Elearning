@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     # LLM APIs
     google_api_key: str = ""
     groq_api_key: str = ""
+    huggingface_api_key: str = ""  # For RAG embeddings (BAAI/bge-base-en-v1.5)
     
     # Server
     host: str = "0.0.0.0"

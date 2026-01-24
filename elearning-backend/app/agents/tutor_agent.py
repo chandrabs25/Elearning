@@ -93,7 +93,19 @@ async def get_prerequisite_chain(concept_id: str, depth: int = 3) -> list[dict]:
 
 # === Agent Nodes ===
 async def retrieve_context(state: TutorState) -> TutorState:
-    """Retrieve concept content and prerequisites from Neo4j."""
+    """Retrieve concept content and prerequisites from Neo4j.
+    
+    If concept_content is already set (from RAG search), skip retrieval.
+    """
+    # Skip retrieval if content already provided (from RAG search)
+    if state.get("concept_content"):
+        # Initialize mode if not set
+        if not state.get("mode"):
+            state["mode"] = "normal"
+        if state.get("max_depth") is None:
+            state["max_depth"] = 3
+        return state
+    
     concept_id = state.get("current_concept_id") or "7.3"
     
     try:

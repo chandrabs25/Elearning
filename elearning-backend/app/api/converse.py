@@ -189,6 +189,12 @@ async def converse(req: ConversationRequest):
     
     elif intent == "open_chat":
         return await handle_open_chat(req.user_id, message, user_state, context)
+    
+    elif intent == "ask_doubt":
+        # User has a subject question - open chat and answer it
+        # Pass the question so the chat opens with an answer
+        context["initial_question"] = message
+        return await handle_open_chat(req.user_id, message, user_state, context)
 
     elif intent == "take_quiz":
         return await handle_quiz_request(req.user_id, message, user_state, context)
@@ -396,13 +402,27 @@ async def chat_panel_message(req: ChatPanelRequest):
     # Add current message
     history_messages.append(HumanMessage(content=req.message))
     
+    # Check if RAG-retrieved sections are available
+    retrieved_sections = req.context.get("retrieved_sections", [])
+    
+    # If we have retrieved sections, format them as context
+    if retrieved_sections and isinstance(retrieved_sections[0], dict):
+        from app.chains.content_search import format_retrieved_content
+        rag_content = format_retrieved_content(retrieved_sections)
+        # Use the first matched section as the "current" for tracking
+        primary_section = retrieved_sections[0]
+        section_id = primary_section.get("section_id", section_id or "7.3")
+        section_title = primary_section.get("title", section_title)
+    else:
+        rag_content = None
+    
     # Build initial state for LangGraph agent
     initial_state: TutorState = {
         "messages": history_messages,
         "user_id": req.user_id,
         "current_concept_id": section_id or "7.3",
         "current_concept_title": section_title,
-        "concept_content": None,
+        "concept_content": rag_content,  # Pre-populated from RAG if available
         "prerequisites": [],
         "needs_prerequisite": False,
         "prerequisite_chain": [],
@@ -1673,8 +1693,22 @@ async def handle_open_chat(user_id: str, message: str, user_state: dict, context
     current_id = current.get("sectionId", current.get("id")) if current else None
     current_section = get_section_by_id(current_id) if current_id else None
     
+    # Check if this is a doubt/question
+    initial_question = context.get("initial_question") or (message if message and "?" in message else None)
+    
+    # If no current section but user has a question, use RAG search
+    retrieved_sections = []
+    if initial_question and not current_section:
+        try:
+            from app.chains.content_search import search_relevant_sections, get_section_suggestions
+            retrieved_sections = await search_relevant_sections(initial_question, top_k=3)
+        except Exception as e:
+            print(f"RAG search error: {e}")
+            retrieved_sections = []
+    
     existing_panels = []
     
+    # If we have explicit current section, show it
     if current_section:
         content = format_content_for_ui(current_section)
         existing_panels.append(
@@ -1688,30 +1722,27 @@ async def handle_open_chat(user_id: str, message: str, user_state: dict, context
                 role="primary"
             )
         )
-    else:
-        existing_panels.append(
-            PanelContent(
-                type="WelcomeCard",
-                props={
-                    "title": "AI Chat",
-                    "subtitle": "Ask me anything about Gravitation!",
-                    "glow": False
-                },
-                role="primary"
-            )
-        )
+    # Otherwise, just show ChatPanel alone (focus mode for doubts)
+    # No WelcomeCard - cleaner UX for question answering
     
     chat_context = {
         "current_section_id": current_id,
         "current_section_title": current_section["section_title"] if current_section else None,
-        "user_id": user_id
+        "user_id": user_id,
+        # Pass retrieved content to chat for RAG
+        "retrieved_sections": retrieved_sections
     }
     
     ui = chat_panel_schema(
         existing_panels=existing_panels,
         current_context=chat_context,
-        initial_message=message if message and "?" in message else None
+        initial_message=initial_question
     )
+    
+    # Add "Learn More" suggestions if we found relevant sections
+    if retrieved_sections:
+        from app.chains.content_search import get_section_suggestions
+        ui.suggested_actions = get_section_suggestions(retrieved_sections)
     
     return ConversationResponse(
         ui=ui,
@@ -1719,10 +1750,12 @@ async def handle_open_chat(user_id: str, message: str, user_state: dict, context
             **context,
             "chat_open": True,
             "current_section": current_id,
-            "focused_panel": "chat"
+            "focused_panel": "chat",
+            "retrieved_sections": [s["section_id"] for s in retrieved_sections]
         },
         debug={
-            "has_current_content": current_section is not None
+            "has_current_content": current_section is not None,
+            "rag_sections_found": len(retrieved_sections)
         }
     )
 
