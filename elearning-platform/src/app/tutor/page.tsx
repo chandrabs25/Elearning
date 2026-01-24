@@ -246,6 +246,11 @@ export default function TutorV2Page() {
         // Check what kind of response we got
         const panelTypes = responseData.ui?.panels?.map((p: Panel) => p.type) || [];
 
+        // Check for close/remove actions first
+        if (msg.includes("close") || msg.includes("remove") || msg.includes("hide")) {
+            return "Panel closed.";
+        }
+
         if (msg.includes("quiz") || msg.includes("test me")) {
             return "Here's a quiz question for you.";
         }
