@@ -90,6 +90,13 @@ ACTION_TO_INTENT = {
     "my progress": "show_progress",
     "progress": "show_progress",
     "remove chapter sections": "remove_component",
+    "close chat": "remove_component",
+    "close exercises": "remove_component",
+    "close exercise": "remove_component",
+    "close panel": "remove_component",
+    "remove chat": "remove_component",
+    "hide chat": "remove_component",
+    "hide exercises": "remove_component",
     "show chapters": "show_chapters",
     "focus": "focus_view",
 }
@@ -160,10 +167,29 @@ async def converse(req: ConversationRequest):
             intent = await classify_intent_llm(req.action, context)
             message = req.action
     elif context.get("focused_panel") in ("quiz", "mcq") and context.get("input_mode") == "answer":
-        # Quiz/MCQ focused in Answer mode - route to quiz answer handler
-        intent = "submit_quiz_answer"
-        message = req.message
-        context["quiz_answer"] = req.message
+        # Quiz/MCQ focused in Answer mode
+        # BUT first check if this is a known command (should bypass answer evaluation)
+        msg_lower = req.message.lower().strip() if req.message else ""
+        is_known_command = any(msg_lower.startswith(cmd) for cmd in [
+            "close", "remove", "hide", "next", "previous", "quiz", "mcq", 
+            "exercise", "show", "teach", "go to", "progress", "help",
+            "open", "chapters", "topics", "summary", "focus"
+        ])
+        
+        if is_known_command:
+            # This is a command, not an answer - use normal intent classification
+            from app.agents.intent_classifier import classify_intent_llm
+            parsed_intent, _ = parse_action(req.message)
+            if parsed_intent:
+                intent = parsed_intent
+            else:
+                intent = await classify_intent_llm(req.message, context)
+            message = req.message
+        else:
+            # This is an actual quiz answer
+            intent = "submit_quiz_answer"
+            message = req.message
+            context["quiz_answer"] = req.message
     elif context.get("focused_panel") in ("chat", "quiz", "mcq", "exercise"):
         # Interactive panels focused in Ask mode - use current section context, no RAG
         # This is for follow-up questions about the displayed content
@@ -1481,7 +1507,8 @@ async def handle_remove_component(user_id: str, message: str, user_state: dict, 
         "SummaryCard": "Summary panel",
         "DerivationBlock": "Derivation block",
         "ExplanationPanel": "Explanation panel",
-        "ChatPanel": "Chat panel"
+        "ChatPanel": "Chat panel",
+        "ExercisePanel": "Exercises panel"
     }.get(component_to_remove, "component")
     
     # If removing ChatPanel
@@ -1495,7 +1522,7 @@ async def handle_remove_component(user_id: str, message: str, user_state: dict, 
             title=current_section["section_title"],
             content=content,
             related_sections=related,
-            toc=toc
+            all_sections=toc
         )
         
         return ConversationResponse(

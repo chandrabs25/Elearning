@@ -160,7 +160,7 @@ export default function TutorV2Page() {
             if (e.key === "j" && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
                 if (!hasChatPanel) {
-                    sendTutorMessage("open chat");
+                    sendTutorMessage("open chat", true);
                 } else {
                     // Focus chat panel if it exists
                     setFocusedPanelIndex(chatPanelIndex);
@@ -442,7 +442,7 @@ export default function TutorV2Page() {
     // Handle navigation to next section after celebration
     const handleNavigateNext = () => {
         if (celebrationData?.next_section_id) {
-            sendTutorMessage(`teach me ${celebrationData.next_section_id}`);
+            sendTutorMessage(`teach me ${celebrationData.next_section_id}`, true);
         }
         setShowCelebration(false);
         setCelebrationData(null);
@@ -450,7 +450,7 @@ export default function TutorV2Page() {
 
     // Handle section click from progress bar
     const handleSectionClick = (sectionId: string) => {
-        sendTutorMessage(`teach me ${sectionId}`);
+        sendTutorMessage(`teach me ${sectionId}`, true);
     };
 
     // Handle exercise answer submission for LLM evaluation
@@ -587,13 +587,13 @@ export default function TutorV2Page() {
 
                         <nav className="flex gap-4 text-sm text-white/40 items-center">
                             <button
-                                onClick={() => sendTutorMessage("show exercises")}
+                                onClick={() => sendTutorMessage("show exercises", true)}
                                 className="hover:text-white transition-colors duration-300"
                             >
                                 Exercises
                             </button>
                             <button
-                                onClick={() => sendTutorMessage("show topics")}
+                                onClick={() => sendTutorMessage("show topics", true)}
                                 className="hover:text-white transition-colors duration-300"
                             >
                                 Topics

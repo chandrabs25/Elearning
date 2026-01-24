@@ -30,6 +30,10 @@ def extract_component_to_remove(message: str) -> str | None:
     if any(word in msg for word in ["explanation", "content", "main"]):
         return "ExplanationPanel"
     
+    # ExercisePanel
+    if any(word in msg for word in ["exercise", "exercises", "practice"]):
+        return "ExercisePanel"
+    
     return None
 
 
