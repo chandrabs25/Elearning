@@ -320,22 +320,7 @@ def compare_schema(original: dict, new_content: dict) -> UISchema:
     )
 
 
-def summary_schema(mastery_data: list, weak_areas: list) -> UISchema:
-    """Generate progress summary schema."""
-    return UISchema(
-        layout="focus",
-        panels=[
-            PanelContent(
-                type="SummaryCard",
-                props={
-                    "mastery": mastery_data,
-                    "weak_areas": weak_areas,
-                    "title": "Your Progress"
-                },
-                animation="fadeIn"
-            )
-        ]
-    )
+
 
 
 def multi_panel_schema(

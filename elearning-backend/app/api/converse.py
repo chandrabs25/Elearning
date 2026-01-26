@@ -39,7 +39,7 @@ from app.chains.ui_generator import (
     explanation_schema,
     explanation_with_exercises_schema,
     quiz_schema,
-    summary_schema,
+
     multi_panel_schema,
     chat_panel_schema,
     mcq_schema,
@@ -98,10 +98,12 @@ ACTION_TO_INTENT = {
     "hide chat": "remove_component",
     "hide exercises": "remove_component",
     "show chapters": "show_chapters",
+    "show topics": "show_chapters",
+    "topics": "show_chapters",
     "focus": "focus_view",
 }
 
-# Prefix-based actions that bypass LLM (e.g., "start:7.3", "goto:7.5")
+
 ACTION_PREFIXES = {
     "start:": "start_topic",      # start:<section_id_or_title>
     "teach:": "start_topic",      # teach:<topic>
@@ -156,40 +158,26 @@ async def converse(req: ConversationRequest):
     has_current_section = bool(user_state and user_state.get("current_concept"))
     
     if req.action:
-        # Try to parse as a structured action (no LLM needed)
+        # Button clicks - direct lookup, NO intent classification needed
         intent, action_payload = parse_action(req.action)
         if intent:
-            # Use payload for handlers, fallback to action string
             message = action_payload if action_payload else req.action
         else:
-            # Unknown action, treat as message (uses LLM)
-            from app.agents.intent_classifier import classify_intent_llm
-            intent = await classify_intent_llm(req.action, context)
-            message = req.action
+            # Unknown action - log warning and return error
+            print(f"Warning: Unknown action '{req.action}' - not in ACTION_TO_INTENT")
+            return ConversationResponse(
+                ui=feedback_schema(
+                    message=f"Unknown action: {req.action}",
+                    status="info"
+                ),
+                conversation_context=context
+            )
     elif context.get("focused_panel") in ("quiz", "mcq") and context.get("input_mode") == "answer":
-        # Quiz/MCQ focused in Answer mode
-        # BUT first check if this is a known command (should bypass answer evaluation)
-        msg_lower = req.message.lower().strip() if req.message else ""
-        is_known_command = any(msg_lower.startswith(cmd) for cmd in [
-            "close", "remove", "hide", "next", "previous", "quiz", "mcq", 
-            "exercise", "show", "teach", "go to", "progress", "help",
-            "open", "chapters", "topics", "summary", "focus"
-        ])
-        
-        if is_known_command:
-            # This is a command, not an answer - use normal intent classification
-            from app.agents.intent_classifier import classify_intent_llm
-            parsed_intent, _ = parse_action(req.message)
-            if parsed_intent:
-                intent = parsed_intent
-            else:
-                intent = await classify_intent_llm(req.message, context)
-            message = req.message
-        else:
-            # This is an actual quiz answer
-            intent = "submit_quiz_answer"
-            message = req.message
-            context["quiz_answer"] = req.message
+        # Quiz/MCQ focused in Answer mode - ALL text is treated as an answer
+        # Users should use buttons or toggle to Ask mode if they want to navigate
+        intent = "submit_quiz_answer"
+        message = req.message
+        context["quiz_answer"] = req.message
     elif context.get("focused_panel") in ("chat", "quiz", "mcq", "exercise"):
         # Interactive panels focused in Ask mode - use current section context, no RAG
         # This is for follow-up questions about the displayed content
@@ -208,96 +196,71 @@ async def converse(req: ConversationRequest):
         intent = await classify_intent_llm(req.message, context)
         message = req.message
     
-    # 3. Route to handler based on intent (now uses string values)
-    if intent == "continue_learning":
-        return await handle_continue(req.user_id, user_state, context)
+    # 3. Route to handler using registry pattern
+    # Define handler registry - maps intent to (handler, args_type)
+    # args_type: "full" = (user_id, message, user_state, context)
+    #            "no_msg" = (user_id, user_state, context)
+    #            "no_state" = (user_id, message, context)
+    #            "minimal" = (user_id, user_state)
     
-    elif intent == "start_topic":
-        return await handle_start_topic(req.user_id, message, context)
-    
-    elif intent == "navigate":
-        return await handle_navigate(req.user_id, message, user_state, context)
-    
-    elif intent == "ask_derivation":
-        return await handle_derivation(req.user_id, message, user_state, context)
-    
-    elif intent == "show_summary":
-        return await handle_summary(req.user_id, user_state)
-    
-    elif intent == "answer_question":
-        return await handle_answer(req.user_id, message, context)
-    
-    elif intent == "add_content":
-        return await handle_add_content(req.user_id, message, user_state, context)
-    
-    elif intent == "remove_component":
-        return await handle_remove_component(req.user_id, message, user_state, context)
-    
-    elif intent == "add_summary":
-        return await handle_add_summary(req.user_id, user_state, context)
-    
-    elif intent == "open_chat":
-        return await handle_open_chat(req.user_id, message, user_state, context)
-    
-    elif intent == "ask_doubt":
-        # User has a subject question - open chat and answer it
-        # Pass the question so the chat opens with an answer
-        context["initial_question"] = message
-        return await handle_open_chat(req.user_id, message, user_state, context)
-
-    elif intent == "take_quiz":
-        return await handle_quiz_request(req.user_id, message, user_state, context)
-
-    elif intent == "generate_mcq":
-        return await handle_mcq_request(req.user_id, message, user_state, context)
-    
-    elif intent == "submit_quiz_answer":
-        # User submitted an answer to a quiz question via the input bar
-        return await handle_quiz_answer(req.user_id, message, context)
-    
-    elif intent == "show_exercises":
-        return await handle_show_exercises(req.user_id, message, user_state, context)
-    
-    elif intent == "answer_exercise":
-        return await handle_exercise_answer(req.user_id, message, context)
-    
-    elif intent == "navigate_to":
-        # Direct navigation to a section (from goto: action)
-        return await handle_navigate(req.user_id, f"go to {message}", user_state, context)
-    
-    elif intent == "explain_content":
-        # Explain current section content
-        return await handle_answer(req.user_id, "explain the current section in detail", context)
-    
-    elif intent == "show_derivation":
-        # Show derivation for current section
-        return await handle_derivation(req.user_id, "show derivation", user_state, context)
-    
-    elif intent == "show_progress":
-        # Show user progress/mastery
-        return await handle_show_progress(req.user_id, user_state, context)
-    
-    elif intent == "show_chapters":
-        # Add chapter sections panel
-        return await handle_add_content(req.user_id, "show chapters", user_state, context)
-    
-    elif intent == "focus_view":
-        # Remove extra panels, focus on main content
-        return await handle_remove_component(req.user_id, "focus", user_state, context)
-    
-    elif intent == "take_quiz_open":
-        # Open-book quiz (content visible)
-        context["open_book"] = True
-        return await handle_quiz_request(req.user_id, message, user_state, context)
-    
-    elif intent == "generate_mcq_open":
-        # Open-book MCQs (content visible)
-        context["open_book"] = True
-        return await handle_mcq_request(req.user_id, message, user_state, context)
-    
-    else:
+    async def _route_to_handler():
+        # Simple handlers with full signature
+        if intent == "continue_learning":
+            return await handle_continue(req.user_id, user_state, context)
+        if intent == "start_topic":
+            return await handle_start_topic(req.user_id, message, context)
+        if intent == "navigate":
+            return await handle_navigate(req.user_id, message, user_state, context)
+        if intent == "ask_derivation":
+            return await handle_derivation(req.user_id, message, user_state, context)
+        if intent == "show_summary":
+            return await handle_show_progress(req.user_id, user_state, context)  # Redirect to progress
+        if intent == "answer_question":
+            return await handle_answer(req.user_id, message, context)
+        if intent == "add_content":
+            return await handle_add_content(req.user_id, message, user_state, context)
+        if intent == "remove_component":
+            return await handle_remove_component(req.user_id, message, user_state, context)
+        if intent == "add_summary":
+            return await handle_add_summary(req.user_id, user_state, context)
+        if intent == "open_chat":
+            return await handle_open_chat(req.user_id, message, user_state, context)
+        if intent == "ask_doubt":
+            context["initial_question"] = message
+            return await handle_open_chat(req.user_id, message, user_state, context)
+        if intent == "take_quiz":
+            return await handle_quiz_request(req.user_id, message, user_state, context)
+        if intent == "generate_mcq":
+            return await handle_mcq_request(req.user_id, message, user_state, context)
+        if intent == "submit_quiz_answer":
+            return await handle_quiz_answer(req.user_id, message, context)
+        if intent == "show_exercises":
+            return await handle_show_exercises(req.user_id, message, user_state, context)
+        if intent == "answer_exercise":
+            return await handle_exercise_answer(req.user_id, message, context)
+        if intent == "navigate_to":
+            return await handle_navigate(req.user_id, f"go to {message}", user_state, context)
+        if intent == "explain_content":
+            return await handle_answer(req.user_id, "explain the current section in detail", context)
+        if intent == "show_derivation":
+            return await handle_derivation(req.user_id, "show derivation", user_state, context)
+        if intent == "show_progress":
+            return await handle_show_progress(req.user_id, user_state, context)
+        if intent == "show_chapters":
+            return await handle_add_content(req.user_id, "show chapters", user_state, context)
+        if intent == "focus_view":
+            return await handle_remove_component(req.user_id, "focus", user_state, context)
+        if intent == "take_quiz_open":
+            context["open_book"] = True
+            return await handle_quiz_request(req.user_id, message, user_state, context)
+        if intent == "generate_mcq_open":
+            context["open_book"] = True
+            return await handle_mcq_request(req.user_id, message, user_state, context)
+        
         # Default: treat as topic request
         return await handle_start_topic(req.user_id, message, context)
+    
+    return await _route_to_handler()
 
 
 @router.get("/tutor/init/{user_id}")
@@ -406,10 +369,10 @@ async def get_progress(user_id: str):
     }
 
 
-# === Chat Panel Models and Endpoint ===
+
 
 class ChatMessage(BaseModel):
-    role: str  # "user" or "assistant"
+    role: str  
     content: list | str  # Can be string or list of content items
 
 
@@ -745,15 +708,7 @@ async def handle_derivation(user_id: str, message: str, user_state: dict, contex
     return await handle_start_topic(user_id, message, context)
 
 
-async def handle_summary(user_id: str, user_state: dict) -> ConversationResponse:
-    """Handle progress summary request."""
-    mastery = user_state.get("mastery", []) if user_state else []
-    weak = await get_weak_concepts(user_id)
-    
-    return ConversationResponse(
-        ui=summary_schema(mastery, weak),
-        conversation_context={"showing_summary": True}
-    )
+
 
 
 async def handle_show_progress(user_id: str, user_state: dict, context: dict) -> ConversationResponse:

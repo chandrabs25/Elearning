@@ -6,15 +6,15 @@ from functools import lru_cache
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
-    # Neo4j
+    
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = "password"
     
-    # LLM APIs
+    
     google_api_key: str = ""
     groq_api_key: str = ""
-    huggingface_api_key: str = ""  # For RAG embeddings (BAAI/bge-base-en-v1.5)
+    huggingface_api_key: str = "" 
     
     # Server
     host: str = "0.0.0.0"
