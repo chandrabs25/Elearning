@@ -342,8 +342,13 @@ async def converse(req: ConversationRequest):
         # - TOPIC: "Teach me gravity" → Show section (no RAG)
         # - DOUBT: "Why does the moon not fall?" → RAG answer
         # - Other intents: QUIZ, NAVIGATE, etc.
-        from app.agents.intent_classifier import classify_intent_llm
-        intent = await classify_intent_llm(req.message, context)
+        from app.agents.intent_classifier import classify_intent_with_section
+        result = await classify_intent_with_section(req.message, context)
+        intent = result["intent"]
+        # Store resolved section in context for handlers to use
+        if result.get("target_section_id"):
+            context["resolved_section_id"] = result["target_section_id"]
+            context["resolved_section_title"] = result.get("target_section_title")
         message = req.message
         if intent == "ask_doubt":
             context["initial_question"] = message
@@ -753,7 +758,15 @@ async def handle_continue(user_id: str, user_state: dict, context: dict) -> Conv
 
 async def handle_start_topic(user_id: str, message: str, context: dict) -> ConversationResponse:
     """Handle topic teaching request."""
-    # Try to find the topic in content
+    # 1. Check if LLM already resolved the section (from combined classifier)
+    if context.get("resolved_section_id"):
+        section_id = context["resolved_section_id"]
+        section = get_section_by_id(section_id)
+        if section:
+            await update_current_concept(user_id, section_id)
+            return await _build_explanation_response(user_id, section, context)
+    
+    # 2. Fallback: Try to find the topic in content (for legacy/direct calls)
     matches = search_sections_by_topic(message)
     
     if matches:
@@ -1448,20 +1461,27 @@ async def handle_exercise_answer(user_id: str, answer: str, context: dict) -> Co
 
 async def handle_add_content(user_id: str, message: str, user_state: dict, context: dict) -> ConversationResponse:
     """Handle 'add content' intent - add a new panel without replacing existing content."""
-    topic = extract_topic_from_add_request(message)
-    
     current = user_state.get("current_concept") if user_state else None
     current_id = current.get("sectionId", current.get("id")) if current else None
     current_section = get_section_by_id(current_id) if current_id else None
     
     new_section = None
-    if topic:
-        new_section = get_section_by_id(topic)
-        
-        if not new_section:
-            matches = search_sections_by_topic(topic)
-            if matches:
-                new_section = get_section_by_id(matches[0]["id"])
+    
+    # 1. Check if LLM already resolved the section (from combined classifier)
+    if context.get("resolved_section_id"):
+        resolved_id = context["resolved_section_id"]
+        if resolved_id != current_id:  # Don't add the same section
+            new_section = get_section_by_id(resolved_id)
+    
+    # 2. Fallback: Use extractors and search (for legacy/direct calls)
+    if not new_section:
+        topic = extract_topic_from_add_request(message)
+        if topic:
+            new_section = get_section_by_id(topic)
+            if not new_section:
+                matches = search_sections_by_topic(topic)
+                if matches:
+                    new_section = get_section_by_id(matches[0]["id"])
     
     if not new_section:
         matches = search_sections_by_topic(message)
@@ -1949,7 +1969,11 @@ async def handle_agent_chat(user_id: str, message: str, user_state: dict, contex
         user_mastery_state = await get_user_state(user_id)
         current_mastery = 0
         if user_mastery_state and user_mastery_state.get("mastery"):
-            current_mastery = user_mastery_state["mastery"].get(current_id, 0)
+            # mastery is a list of dicts: [{concept: id, level: N, ...}, ...]
+            for m in user_mastery_state["mastery"]:
+                if m.get("concept") == current_id:
+                    current_mastery = m.get("level", 0)
+                    break
         
         if current_mastery >= MASTERY_THRESHOLD:
             ui.suggested_actions = [

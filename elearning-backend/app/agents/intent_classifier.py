@@ -1,4 +1,5 @@
 """LLM-based intent classification for tutor conversations."""
+import json
 from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage
 
@@ -44,68 +45,101 @@ INTENT_MAP = {
 }
 
 
-async def classify_intent_llm(message: str, context: dict = None) -> str:
+async def classify_intent_with_section(message: str, context: dict = None) -> dict:
     """
-    LLM-based intent classification.
-    Returns intent string matching TutorIntent values.
+    Combined LLM-based intent classification AND section resolution.
+    Returns dict with:
+        - intent: str (e.g., "start_topic", "add_content")
+        - target_section_id: str | None (e.g., "7.2")
+        - target_section_title: str | None
     """
     from app.config import settings
+    from app.chains.content import get_table_of_contents
     
     context = context or {}
     
     # Check context-based intents first (no LLM needed)
     if context.get("expecting_answer"):
-        return "answer_question"
+        return {"intent": "answer_question", "target_section_id": None, "target_section_title": None}
     if context.get("expecting_exercise_answer"):
-        return "answer_exercise"
+        return {"intent": "answer_exercise", "target_section_id": None, "target_section_title": None}
     
-    # Use LLM for everything else
+    # Get available sections for the LLM to choose from
+    toc = get_table_of_contents()
+    section_list = "\n".join([f"  - {s['id']}: {s['title']}" for s in toc[:15]])  # Limit to 15
+    
     llm = ChatGroq(
         model="llama-3.3-70b-versatile",
         temperature=0.1,
         api_key=settings.groq_api_key
     )
     
-    prompt = f"""You are an intent classifier for an AI physics tutor. Classify the user's message into exactly ONE intent.
+    prompt = f"""You are an intent classifier for an AI physics tutor. Analyze the user's message and return a JSON object.
 
 User message: "{message}"
 
+Available sections in the textbook:
+{section_list}
+
 Available intents:
 - CONTINUE: User wants to continue, agrees, says yes/ok/sure
-- NAVIGATE: User wants to go to next/previous section, go to a specific section
-- TOPIC: User wants to START LEARNING a topic from the beginning. Examples: "teach me gravity", "explain Newton's laws", "what is escape velocity", "show me section 7.1"
-- DOUBT: User has a SPECIFIC QUESTION that needs to be ANSWERED using the textbook. Examples: "why does the moon not fall?", "how do I calculate orbital velocity?", "I don't understand this formula", "what's the difference between weight and mass?"
-- QUIZ: User wants a quiz, says "quiz me", "test me", "give me a problem"
-- MCQ: User specifically wants multiple choice questions
-- EXERCISES: User wants practice exercises from the chapter
-- DERIVATION: User wants to see a formula, equation, or derivation step-by-step
-- SUMMARY: User asks about their progress, "how am I doing"
-- ADD_CONTENT: User wants to add content to current view, "also show", "beside this"
-- REMOVE: User wants to hide/remove a panel
-- CHAT: User wants to open chat, says "help me", "ask AI"
+- NAVIGATE: User wants to go to next/previous section
+- TOPIC: User wants to learn a topic (show lesson content)
+- DOUBT: User has a specific question to be answered
+- QUIZ: User wants a quiz
+- MCQ: User wants multiple choice questions
+- EXERCISES: User wants practice exercises
+- DERIVATION: User wants formulas/derivations
+- SUMMARY: User asks about their progress
+- ADD_CONTENT: User wants to ADD content beside current view ("also show", "compare with")
+- REMOVE: User wants to hide/remove a panel ("close", "hide")
+- CHAT: User wants to open chat
 
-Reply with ONLY the intent name (e.g., "QUIZ" or "DOUBT"), nothing else.
+Reply with ONLY valid JSON (no markdown, no explanation):
+{{"intent": "INTENT_NAME", "section_id": "X.X or null", "section_title": "Title or null"}}
 
-CRITICAL INSTRUCTION FOR "TOPIC" vs "DOUBT":
-- If the user asks for a DEFINITION or EXPLANATION of a main concept (e.g., "what is gravity", "explain escape velocity", "teach me potential energy"), classify as **TOPIC**. We want to show them the full lesson content, not just a chat answer.
-- Only use **DOUBT** if the user asks a specific "WHY" or "HOW" question, a comparison, or a niche question that isn't a requesting a full topic.
-- Bias: When in doubt, prefer TOPIC (showing content) over DOUBT (chat)."""
+Rules:
+1. If intent is TOPIC, ADD_CONTENT, or NAVIGATE, pick the BEST matching section from the list.
+2. For TOPIC: Pick the section that best matches what user wants to learn.
+3. For ADD_CONTENT: Pick the section user wants to ADD (not the current one).
+4. For intents like QUIZ, DOUBT, CHAT: section_id can be null.
+5. Prefer exact title matches. "Kepler's laws" → "7.2" not "7.1".
+6. If user says "next" or "previous", set intent to NAVIGATE and section_id to null."""
 
     try:
         response = await llm.ainvoke([HumanMessage(content=prompt)])
-        intent_raw = response.content.strip().upper()
+        content = response.content.strip()
         
-        # Clean up response (in case LLM adds extra text)
-        for intent in INTENT_MAP.keys():
-            if intent in intent_raw:
-                return INTENT_MAP[intent]
+        # Try to parse JSON
+        # Handle potential markdown code blocks
+        if content.startswith("```"):
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+        content = content.strip()
         
-        # Default fallback
-        return "start_topic"
+        result = json.loads(content)
+        intent_raw = result.get("intent", "UNKNOWN").upper()
+        
+        return {
+            "intent": INTENT_MAP.get(intent_raw, "start_topic"),
+            "target_section_id": result.get("section_id"),
+            "target_section_title": result.get("section_title")
+        }
+    except json.JSONDecodeError as e:
+        print(f"JSON parse error: {e}, content: {content}")
+        # Fallback: try to extract intent from text
+        return {"intent": _fallback_classify(message, context), "target_section_id": None, "target_section_title": None}
     except Exception as e:
         print(f"Intent classification error: {e}")
-        # Fallback to simple keyword matching
-        return _fallback_classify(message, context)
+        return {"intent": _fallback_classify(message, context), "target_section_id": None, "target_section_title": None}
+
+
+# Backward compatibility wrapper
+async def classify_intent_llm(message: str, context: dict = None) -> str:
+    """Legacy wrapper - returns just the intent string."""
+    result = await classify_intent_with_section(message, context)
+    return result["intent"]
 
 
 def _fallback_classify(message: str, context: dict) -> str:
@@ -126,6 +160,10 @@ def _fallback_classify(message: str, context: dict) -> str:
         return "ask_derivation"
     if any(w in msg for w in ["progress", "summary", "how am i"]):
         return "show_summary"
+    if any(w in msg for w in ["also", "add", "beside", "compare"]):
+        return "add_content"
+    if any(w in msg for w in ["close", "hide", "remove"]):
+        return "remove_component"
     if any(w in msg for w in ["help", "doubt", "ask ai"]):
         return "open_chat"
     if "?" in msg:

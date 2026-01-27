@@ -124,13 +124,8 @@ async def retrieve_context(state: TutorState) -> TutorState:
 
 async def understand_question(state: TutorState) -> TutorState:
     """Analyze user's message - is it a question needing help, or an answer to our prereq question?"""
-    from app.config import settings
-    
-    llm = ChatGroq(
-        model="llama-3.3-70b-versatile", 
-        temperature=0.2,
-        api_key=settings.groq_api_key
-    )
+    # LLM initialization removed (was unused)
+    # llm = ChatGroq(...)
     
     last_message = state["messages"][-1].content if state["messages"] else ""
     
