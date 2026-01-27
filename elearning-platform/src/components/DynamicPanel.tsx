@@ -21,6 +21,7 @@ interface Panel {
     animation?: string;
     role?: PanelRole;
     width?: string;
+    loading?: boolean;  // Added loading state for skeleton rendering
 }
 
 interface DynamicPanelProps {
@@ -216,7 +217,7 @@ export default function DynamicPanel({
     const widthStyle = {};
 
     // Build props for the component - use Record to allow dynamic props
-    let componentProps: Record<string, unknown> = { ...panel.props, onAction };
+    let componentProps: Record<string, unknown> = { ...panel.props, onAction, loading: panel.loading };
 
     // Special handling for ChatPanel - pass controlled props
     if (panel.type === "ChatPanel") {

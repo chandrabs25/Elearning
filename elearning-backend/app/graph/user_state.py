@@ -1,5 +1,6 @@
-"""User state management for Neo4j."""
+"""User state management for Neo4j with Redis caching."""
 from app.graph.client import neo4j_client
+from app.cache import cache_get, cache_set, cache_delete
 from datetime import datetime
 
 
@@ -16,7 +17,15 @@ async def get_or_create_user(user_id: str) -> dict:
 
 
 async def get_user_state(user_id: str) -> dict:
-    """Get user's current learning state."""
+    """Get user's current learning state (with Redis caching)."""
+    cache_key = f"user_state:{user_id}"
+    
+    # Try cache first
+    cached = await cache_get(cache_key)
+    if cached:
+        return cached
+    
+    # Fetch from Neo4j
     query = """
     MATCH (u:User {id: $user_id})
     OPTIONAL MATCH (u)-[:STUDYING]->(current:Concept)
@@ -29,11 +38,15 @@ async def get_user_state(user_id: str) -> dict:
         return None
     
     row = results[0]
-    return {
+    state = {
         "user": dict(row["u"]) if row["u"] else None,
         "current_concept": dict(row["current"]) if row["current"] else None,
         "mastery": row["mastery"] if row["mastery"] else []
     }
+    
+    # Cache permanently (invalidated on state changes)
+    await cache_set(cache_key, state)
+    return state
 
 
 async def update_current_concept(user_id: str, concept_id: str) -> None:
@@ -46,6 +59,8 @@ async def update_current_concept(user_id: str, concept_id: str) -> None:
     MERGE (u)-[:STUDYING]->(c)
     """
     await neo4j_client.execute_read(query, user_id=user_id, concept_id=concept_id)
+    # Invalidate cache after state change
+    await cache_delete(f"user_state:{user_id}")
 
 
 async def update_mastery(user_id: str, concept_id: str, delta: int) -> dict:
@@ -79,6 +94,9 @@ async def update_mastery(user_id: str, concept_id: str, delta: int) -> dict:
     results = await neo4j_client.execute_read(
         query, user_id=user_id, concept_id=concept_id, delta=delta
     )
+    # Invalidate cache after mastery change
+    await cache_delete(f"user_state:{user_id}")
+    
     if results:
         return {
             "new_level": results[0]["new_level"],

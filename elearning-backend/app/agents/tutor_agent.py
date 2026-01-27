@@ -693,8 +693,9 @@ async def evaluate_exercise_with_agent(
         "exercise_evaluation": None
     }
     
-    # Run the agent
-    final_state = await tutor_agent.ainvoke(initial_state)
+    # Run the agent with required config for checkpointer
+    config = {"configurable": {"thread_id": f"exercise-{user_id}-{exercise_label}"}}
+    final_state = await tutor_agent.ainvoke(initial_state, config)
     
     evaluation = final_state.get("exercise_evaluation", {})
     

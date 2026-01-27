@@ -56,6 +56,7 @@ interface UISchema {
     celebration?: CelebrationData;
     suggested_actions?: SuggestedAction[];
     highlight_terms?: string[];  // Terms to highlight in content
+    loading?: boolean;  // True when skeleton is shown (streaming)
 }
 
 interface ConversationContext {
@@ -64,6 +65,7 @@ interface ConversationContext {
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 const USER_ID = "demo-user";
+const STREAMING_ENABLED = true;  // Toggle for streaming vs traditional fetch
 
 export default function TutorV2Page() {
     const [ui, setUI] = useState<UISchema | null>(null);
@@ -71,6 +73,7 @@ export default function TutorV2Page() {
     const [context, setContext] = useState<ConversationContext>({});
     const [error, setError] = useState<string | null>(null);
     const [isProcessing, setIsProcessing] = useState(false);
+    const [isStreaming, setIsStreaming] = useState(false);  // For streaming UI updates
     const [focusedPanelIndex, setFocusedPanelIndex] = useState<number | null>(null);
     const [inputMode, setInputMode] = useState<"answer" | "ask">("ask"); // For quiz/mcq input control
     const inputRef = useRef<HTMLInputElement>(null);
@@ -306,23 +309,95 @@ export default function TutorV2Page() {
                 ? { user_id: USER_ID, action: message, context: requestContext }
                 : { user_id: USER_ID, message, context: requestContext };
 
-            const res = await fetch(`${BACKEND_URL}/api/tutor/converse`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(body),
-            });
+            // Use streaming endpoint if enabled
+            if (STREAMING_ENABLED && !isAction) {
+                setIsStreaming(true);
 
-            if (!res.ok) throw new Error("Failed to process message");
-            const data = await res.json();
-            setUI(data.ui);
-            setContext(data.conversation_context || {});
+                const res = await fetch(`${BACKEND_URL}/api/tutor/converse/stream`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body),
+                });
 
-            // Speak feedback based on the response
-            const feedback = getVoiceFeedback(message, data);
-            speak(feedback);
+                if (!res.ok) throw new Error("Failed to process message");
+
+                const reader = res.body?.getReader();
+                const decoder = new TextDecoder();
+
+                if (reader) {
+                    let buffer = "";
+
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split("\n");
+                        buffer = lines.pop() || "";  // Keep incomplete line in buffer
+
+                        for (const line of lines) {
+                            if (line.startsWith("data: ")) {
+                                try {
+                                    const event = JSON.parse(line.slice(6));
+
+                                    if (event.type === "skeleton") {
+                                        // Show skeleton immediately
+                                        setUI(event.ui);
+                                    } else if (event.type === "content_chunk") {
+                                        // Append chunk to panel content
+                                        setUI(prev => {
+                                            if (!prev) return prev;
+                                            const updated = { ...prev, panels: [...prev.panels] };
+                                            const panelIdx = event.panel_index;
+                                            if (updated.panels[panelIdx]) {
+                                                const panel = { ...updated.panels[panelIdx] };
+                                                const props = { ...panel.props } as Record<string, unknown>;
+                                                const content = (props.content as unknown[]) || [];
+                                                props.content = [...content, event.chunk];
+                                                props.loading = false;  // Clear loading state
+                                                panel.props = props;
+                                                updated.panels[panelIdx] = panel;
+                                            }
+                                            return { ...updated, loading: false };
+                                        });
+                                    } else if (event.type === "complete") {
+                                        // Final state
+                                        setUI(event.ui);
+                                        setContext(event.context || {});
+                                        setIsStreaming(false);
+                                    } else if (event.type === "error") {
+                                        console.error("Stream error:", event.message);
+                                        setIsStreaming(false);
+                                    }
+                                } catch (e) {
+                                    console.error("Failed to parse SSE event:", e);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                setIsStreaming(false);
+            } else {
+                // Traditional fetch (for actions or when streaming disabled)
+                const res = await fetch(`${BACKEND_URL}/api/tutor/converse`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body),
+                });
+
+                if (!res.ok) throw new Error("Failed to process message");
+                const data = await res.json();
+                setUI(data.ui);
+                setContext(data.conversation_context || {});
+
+                // Speak feedback based on the response
+                const feedback = getVoiceFeedback(message, data);
+                speak(feedback);
+            }
 
             // Reset chat state when UI changes (new chat panel might be added)
-            if (data.ui?.panels?.some((p: Panel) => p.type === "ChatPanel")) {
+            if (ui?.panels?.some((p: Panel) => p.type === "ChatPanel")) {
                 // Check if this is a newly opened chat
                 if (!hasChatPanel) {
                     setChatMessages([]);
@@ -337,10 +412,11 @@ export default function TutorV2Page() {
         } catch (err) {
             console.error(err);
             speak("Something went wrong. Please try again.");
+            setIsStreaming(false);
         } finally {
             setIsProcessing(false);
         }
-    }, [context, isProcessing, hasChatPanel, speak]);
+    }, [context, isProcessing, hasChatPanel, speak, ui]);
 
     // Send message to chat endpoint
     const sendChatMessage = useCallback(async (message: string) => {
@@ -630,7 +706,6 @@ export default function TutorV2Page() {
                 <AnimatePresence mode="wait">
                     {ui && (
                         <motion.div
-                            key={JSON.stringify(ui.layout)}
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0 }}
@@ -763,19 +838,19 @@ export default function TutorV2Page() {
     );
 }
 
+
 function getLayoutClasses(layout: LayoutMode): string {
     switch (layout) {
         case "focus":
-            // Single panel fills the entire space
-            return "flex h-full";
+            return "flex h-full"; // Single panel fills space
         case "split":
-            return "grid grid-cols-2 gap-6 h-full";
+            return "grid grid-cols-2 gap-6 h-full"; // Exactly 2 equal columns
         case "compare":
-            return "grid grid-cols-[1fr_2fr] gap-6 h-full";
+            return "grid grid-cols-[1fr_2fr] gap-6 h-full"; // Left sidebar, main content
         case "stack":
             return "flex flex-col gap-4 items-center overflow-y-auto";
         case "dynamic":
-            // Use grid for better height control - panels will fill available height
+            // Use grid but let inline styles define columns based on content
             return "grid gap-6 h-full";
         default:
             return "flex h-full";
@@ -784,11 +859,20 @@ function getLayoutClasses(layout: LayoutMode): string {
 
 // Calculate grid-template-columns for dynamic layout
 function calculateGridColumns(panels: Panel[]): string {
+    // If we have exactly 2 panels and no explicit widths/roles say otherwise, force strict 50/50
+    // This overrides the previous "1fr" behavior which might yield unequal widths if content differs
+    if (panels.length === 2 && !panels.some(p => p.width || p.role === "auxiliary")) {
+        return "minmax(0, 1fr) minmax(0, 1fr)";
+    }
+
     return panels.map(panel => {
         if (panel.width) return panel.width;
+
         const role = panel.role || "primary";
-        if (role === "auxiliary") return "minmax(200px, 25%)";
-        return "1fr"; // Primary panels share remaining space equally
+        if (role === "auxiliary") return "25%"; // Fixed 25% width for auxiliary panels
+
+        // Use minmax(0, 1fr) to prevent content blowout (e.g. long text/code)
+        return "minmax(0, 1fr)";
     }).join(" ");
 }
 

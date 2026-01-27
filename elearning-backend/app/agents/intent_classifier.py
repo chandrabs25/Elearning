@@ -1,7 +1,9 @@
 """LLM-based intent classification for tutor conversations."""
 import json
+import hashlib
 from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage
+from app.cache import cache_get, cache_set
 
 
 # Intent constants - matching the original TutorIntent enum
@@ -64,6 +66,13 @@ async def classify_intent_with_section(message: str, context: dict = None) -> di
     if context.get("expecting_exercise_answer"):
         return {"intent": "answer_exercise", "target_section_id": None, "target_section_title": None}
     
+    # Try cache first (normalize message for better hit rate)
+    normalized_msg = message.lower().strip()
+    cache_key = f"intent:{hashlib.md5(normalized_msg.encode()).hexdigest()}"
+    cached = await cache_get(cache_key)
+    if cached:
+        return cached
+    
     # Get available sections for the LLM to choose from
     toc = get_table_of_contents()
     section_list = "\n".join([f"  - {s['id']}: {s['title']}" for s in toc[:15]])  # Limit to 15
@@ -121,11 +130,15 @@ Rules:
         result = json.loads(content)
         intent_raw = result.get("intent", "UNKNOWN").upper()
         
-        return {
+        result_dict = {
             "intent": INTENT_MAP.get(intent_raw, "start_topic"),
             "target_section_id": result.get("section_id"),
             "target_section_title": result.get("section_title")
         }
+        
+        # Cache permanently (LRU eviction only)
+        await cache_set(cache_key, result_dict)
+        return result_dict
     except json.JSONDecodeError as e:
         print(f"JSON parse error: {e}, content: {content}")
         # Fallback: try to extract intent from text

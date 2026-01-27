@@ -128,15 +128,52 @@ interface ExplanationPanelProps {
     content: ContentItem[];
     animated?: boolean;
     highlightTerms?: string[];  // Terms to highlight with glow effect
+    loading?: boolean;  // Show skeleton loading state
     onAction?: (action: string) => void;
 }
+
+// Skeleton loading component
+const SkeletonLoader = () => (
+    <div className="animate-pulse space-y-4">
+        {/* Title skeleton */}
+        <div className="h-8 bg-white/10 rounded-lg w-3/4"></div>
+
+        {/* Content skeletons */}
+        <div className="space-y-3">
+            <div className="h-4 bg-white/10 rounded w-full"></div>
+            <div className="h-4 bg-white/10 rounded w-5/6"></div>
+            <div className="h-4 bg-white/10 rounded w-4/6"></div>
+        </div>
+
+        {/* Formula skeleton */}
+        <div className="h-12 bg-white/10 rounded-lg w-2/3 mx-auto my-4"></div>
+
+        {/* More content */}
+        <div className="space-y-3">
+            <div className="h-4 bg-white/10 rounded w-full"></div>
+            <div className="h-4 bg-white/10 rounded w-5/6"></div>
+            <div className="h-4 bg-white/10 rounded w-3/4"></div>
+            <div className="h-4 bg-white/10 rounded w-4/6"></div>
+        </div>
+    </div>
+);
 
 export default function ExplanationPanel({
     title,
     content,
     animated = true,
     highlightTerms = [],
+    loading = false,
 }: ExplanationPanelProps) {
+    // Show skeleton loader if loading
+    if (loading) {
+        return (
+            <div className="p-6 bg-neutral-900/50 rounded-2xl border border-white/5 h-full max-h-full min-h-0 overflow-y-auto">
+                <SkeletonLoader />
+            </div>
+        );
+    }
+
     return (
         <div className="p-6 bg-neutral-900/50 rounded-2xl border border-white/5 h-full max-h-full min-h-0 overflow-y-auto scrollbar-thin scrollbar-thumb-white/40 hover:scrollbar-thumb-white/60 flex flex-col">
             {/* Title */}

@@ -1,7 +1,10 @@
 """Main conversation endpoint for AI Tutor V2."""
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Literal
+import json
+import asyncio
 
 from app.graph.user_state import (
     get_or_create_user,
@@ -260,6 +263,7 @@ ACTION_TO_INTENT = {
 ACTION_PREFIXES = {
     "start:": "start_topic",      # start:<section_id_or_title>
     "teach:": "start_topic",      # teach:<topic>
+    "teach me ": "start_topic",   # teach me <section_id> (from NavigationMap/ProgressBar)
     "goto:": "navigate_to",       # goto:<section_id>
 }
 
@@ -418,6 +422,86 @@ async def converse(req: ConversationRequest):
         return await handle_start_topic(req.user_id, message, context)
     
     return await _route_to_handler()
+
+
+@router.post("/tutor/converse/stream")
+async def converse_stream(req: ConversationRequest):
+    """
+    Streaming version of converse endpoint.
+    Uses Server-Sent Events (SSE) for progressive UI rendering:
+    1. Sends skeleton UI immediately
+    2. Streams content chunks progressively
+    3. Sends complete signal when done
+    """
+    from app.chains.skeleton_generator import create_skeleton_ui, chunk_content
+    from app.agents.intent_classifier import classify_intent_with_section
+    
+    async def generate():
+        try:
+            # 1. Get user state
+            await get_or_create_user(req.user_id)
+            user_state = await get_user_state(req.user_id)
+            context = {**req.context}
+            
+            # 2. Quick intent classification for skeleton
+            intent = "start_topic"  # Default
+            section_title = None
+            
+            if req.action:
+                intent, _ = parse_action(req.action)
+                intent = intent or "start_topic"
+            else:
+                result = await classify_intent_with_section(req.message, context)
+                intent = result["intent"]
+                section_title = result.get("target_section_title")
+                if result.get("target_section_id"):
+                    context["resolved_section_id"] = result["target_section_id"]
+            
+            # 3. Send skeleton immediately
+            skeleton = create_skeleton_ui(intent, section_title)
+            yield f"data: {json.dumps({'type': 'skeleton', 'ui': skeleton})}\n\n"
+            
+            # Small delay to ensure skeleton renders
+            await asyncio.sleep(0.05)
+            
+            # 4. Process the actual request (reuse existing logic)
+            # Create a fake request to call the main handler
+            full_response = await converse(req)
+            ui_dict = full_response.ui.model_dump()
+            
+            # 5. Stream content for each panel
+            for panel_idx, panel in enumerate(ui_dict.get("panels", [])):
+                props = panel.get("props", {})
+                content = props.get("content", [])
+                
+                if content and isinstance(content, list):
+                    # Stream content items one by one
+                    for chunk_idx, item in enumerate(content):
+                        chunk_event = {
+                            "type": "content_chunk",
+                            "panel_index": panel_idx,
+                            "chunk_index": chunk_idx,
+                            "chunk": item
+                        }
+                        yield f"data: {json.dumps(chunk_event)}\n\n"
+                        await asyncio.sleep(0.03)  # Smooth animation
+            
+            # 6. Send complete signal with final UI
+            yield f"data: {json.dumps({'type': 'complete', 'ui': ui_dict, 'context': full_response.conversation_context})}\n\n"
+            
+        except Exception as e:
+            # Send error event
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering
+        }
+    )
 
 
 @router.get("/tutor/init/{user_id}")
@@ -1464,8 +1548,129 @@ async def handle_exercise_answer(user_id: str, answer: str, context: dict) -> Co
         )
 
 
+
+async def handle_toggle_chapters(user_id: str, user_state: dict, context: dict) -> ConversationResponse:
+    """Handle 'show chapters' / 'topics' toggle."""
+    # Check if NavigationMap is already present in the UI context/panels
+    # The frontend sends current panel types in context if we track them, 
+    # but we can also infer from user state or just use a simple toggle logic based on last action.
+    # However, for a robust toggle, we need to know what's on screen.
+    # We'll assume if the user asks to "show topics", they want to see it.
+    # If they ask again or "close topics", we remove it.
+    
+    # Check if we are currently showing navigation
+    # This is a bit tricky without full UI state from frontend, but we can check if the LAST valid response had it
+    # OR better: The frontend specifically requested "show topics", so we show it.
+    # IF the intent was "remove_component" with "NavigationMap", we hide it.
+    
+    # BUT the user said "if the navigation menu is already on the screen, pressing the topics button should remove it"
+    # This implies the button sends the SAME command "show topics". 
+    # So we need to know if it's currently visible.
+    
+    # We can inspect the `context` passed from the frontend.
+    # Let's see what's in `context`.
+    # It contains `panels` list of IDs often.
+    
+    # IMPORTANT: The frontend sends the full context. We should update the frontend to send the list of active panel TYPES.
+    # But for now, let's look at `handle_remove_component`.
+    
+    # Logic:
+    # 1. Get current section
+    current = user_state.get("current_concept") if user_state else None
+    current_id = current.get("sectionId", current.get("id")) if current else None
+    current_section = get_section_by_id(current_id) if current_id else None
+    
+    toc = get_table_of_contents()
+    
+    # If we can detect it's already open, close it.
+    # Since we can't easily detect UI state from here without frontend change, 
+    # and the user said "deterministic button", we will try to infer or fallback.
+    
+    # Wait, the user prompt implies the frontend button sends "show topics".
+    # If we want a toggle, we need state.
+    # Let's check `context`.
+    
+    # HEURISTIC: If the last action was "show topics", then close it? No, unreliable.
+    
+    # BETTER APPROACH:
+    # Inspect `context.get("active_panels", [])` if available?
+    # The input context structure in `page.tsx`:
+    # `const requestContext = { ...context, focused_panel, input_mode: inputMode };`
+    # It doesn't send active panels.
+    
+    # TO FIX THIS PROPERLY WITHOUT FRONTEND CHANGES (as requested "don't use complex logic" might mean "keep it simple"):
+    # We will implement "open" logic here. The frontend might need to send "close" if it's open?
+    # User said: "if the navigation menu is already on the screen, pressing the topics button should remove the navigation menu from the screen"
+    # This implies the toggling logic should happen.
+    
+    # Since we cannot know for sure, let's add a `is_navigation_open` flag to the context?
+    # Or, we can just return the NavigationMap.
+    
+    # ACTUALLY, checking the grep results, `handle_remove_component` handles removal.
+    # If we want a TOGGLE, the frontend should probably interpret the button press.
+    # BUT, the user asked "make it display... if already on screen... remove".
+    
+    # Let's modify the prompt to `toggle topics`? No, the button sends `show topics`.
+    
+    # OK, let's assume looking at `context.get('navigation_visible')`.
+    # We can update `page.tsx` to send this.
+    # But I should try to do it with just backend if possible.
+    # The backend maintains `conversation_context`.
+    
+    visible = context.get("navigation_visible", False)
+    
+    if visible:
+        # Remove it (reuse handle_remove_component logic effectively)
+        return await handle_remove_component(user_id, "close navigation", user_state, context)
+    else:
+        # Show it (Add NavigationMap)
+        if current_section:
+            # Add to side
+            content = format_content_for_ui(current_section)
+            related = get_related_sections(current_id)
+            
+            ui = explanation_schema(
+                title=current_section["section_title"],
+                content=content,
+                related_sections=related,
+                all_sections=toc
+            )
+            # Ensure NavigationMap is in there (explanation_schema adds it if all_sections passed?)
+            # Let's check `explanation_schema`. Usually it puts generic layout.
+            # We might need `multi_panel_schema` or explicit panel text.
+            
+            # Explicitly constructing UI with NavigationMap
+            # If `explanation_schema` doesn't enforce it, we might need a custom one.
+            # But let's look at `handle_add_content` fallback:
+            # It returns a `NavigationMap` panel.
+            
+            # Let's just return a UI with NavigationMap added to the current view.
+            # This is hard without knowing current view.
+            
+            # SIMPLIFICATION:
+            # Just return the table of contents as a focus or side panel.
+            return ConversationResponse(
+                ui=UISchema(
+                    layout="focus",
+                    panels=[{
+                        "type": "NavigationMap",
+                        "props": {
+                            "title": "Topics",
+                            "sections": toc
+                        },
+                        "animation": "fadeIn"
+                    }]
+                ),
+                conversation_context={"navigation_visible": True}
+            )
+
 async def handle_add_content(user_id: str, message: str, user_state: dict, context: dict) -> ConversationResponse:
     """Handle 'add content' intent - add a new panel without replacing existing content."""
+    
+    # Specialized handling for "show chapters" / "topics"
+    if message.lower() in ["show chapters", "show topics", "topics"]:
+        return await handle_toggle_chapters(user_id, user_state, context)
+
     current = user_state.get("current_concept") if user_state else None
     current_id = current.get("sectionId", current.get("id")) if current else None
     current_section = get_section_by_id(current_id) if current_id else None
@@ -1475,6 +1680,7 @@ async def handle_add_content(user_id: str, message: str, user_state: dict, conte
     # 1. Check if LLM already resolved the section (from combined classifier)
     if context.get("resolved_section_id"):
         resolved_id = context["resolved_section_id"]
+        # ... logic continues matched original ...
         if resolved_id != current_id:  # Don't add the same section
             new_section = get_section_by_id(resolved_id)
     
@@ -1538,6 +1744,7 @@ async def handle_add_content(user_id: str, message: str, user_state: dict, conte
         return await _build_explanation_response(user_id, new_section, context)
     
     else:
+        # Fallback to search result if nothing found
         return ConversationResponse(
             ui=UISchema(
                 layout="focus",

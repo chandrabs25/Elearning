@@ -366,7 +366,7 @@ def multi_panel_schema(
     # Navigation will be restored when the added panel is closed
     
     return UISchema(
-        layout="dynamic",
+        layout="split",
         panels=panels,
         input_placeholder="Ask more or say 'focus on' to go back to single view...",
         next_prompt="You can add more content or 'focus' to return to single view"

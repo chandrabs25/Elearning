@@ -25,16 +25,47 @@ interface DerivationBlockProps {
     title?: string;
     derivations: Derivation[];
     stepByStep?: boolean;  // Enable carousel mode
+    loading?: boolean;  // Show skeleton loading state
     onAction?: (action: string) => void;
 }
+
+// Skeleton loading component for derivation
+const DerivationSkeleton = () => (
+    <div className="p-6 bg-gradient-to-br from-blue-500/10 to-purple-500/10 rounded-3xl border border-white/10 backdrop-blur-sm">
+        <div className="animate-pulse space-y-6">
+            {/* Header skeleton */}
+            <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-white/10 rounded-lg"></div>
+                <div className="h-6 bg-white/10 rounded w-32"></div>
+            </div>
+
+            {/* Formula skeletons */}
+            <div className="space-y-4">
+                <div className="h-16 bg-white/10 rounded-lg w-4/5 mx-auto"></div>
+                <div className="h-4 bg-white/10 rounded w-2/3 mx-auto"></div>
+            </div>
+
+            <div className="space-y-4">
+                <div className="h-16 bg-white/10 rounded-lg w-3/4 mx-auto"></div>
+                <div className="h-4 bg-white/10 rounded w-1/2 mx-auto"></div>
+            </div>
+
+            <div className="space-y-4">
+                <div className="h-16 bg-white/10 rounded-lg w-5/6 mx-auto"></div>
+                <div className="h-4 bg-white/10 rounded w-3/5 mx-auto"></div>
+            </div>
+        </div>
+    </div>
+);
 
 export default function DerivationBlock({
     title = "Derivation",
     derivations,
     stepByStep = false,
+    loading = false,
 }: DerivationBlockProps) {
     const [currentStep, setCurrentStep] = useState(0);
-    const totalSteps = derivations.length;
+    const totalSteps = derivations?.length || 0;
 
     const goToNext = () => {
         if (currentStep < totalSteps - 1) {
@@ -47,6 +78,11 @@ export default function DerivationBlock({
             setCurrentStep(currentStep - 1);
         }
     };
+
+    // Show skeleton loader if loading
+    if (loading) {
+        return <DerivationSkeleton />;
+    }
 
     // Step-by-step mode (carousel)
     if (stepByStep && totalSteps > 0) {
@@ -75,10 +111,10 @@ export default function DerivationBlock({
                                     key={i}
                                     onClick={() => setCurrentStep(i)}
                                     className={`w-2 h-2 rounded-full transition-all ${i === currentStep
-                                            ? "bg-blue-400 w-4"
-                                            : i < currentStep
-                                                ? "bg-blue-400/50"
-                                                : "bg-white/20"
+                                        ? "bg-blue-400 w-4"
+                                        : i < currentStep
+                                            ? "bg-blue-400/50"
+                                            : "bg-white/20"
                                         }`}
                                 />
                             ))}
@@ -118,8 +154,8 @@ export default function DerivationBlock({
                         onClick={goToPrev}
                         disabled={currentStep === 0}
                         className={`flex items-center gap-2 px-4 py-2 rounded-xl transition-all ${currentStep === 0
-                                ? "opacity-30 cursor-not-allowed"
-                                : "bg-white/10 hover:bg-white/20 text-white/80 hover:text-white"
+                            ? "opacity-30 cursor-not-allowed"
+                            : "bg-white/10 hover:bg-white/20 text-white/80 hover:text-white"
                             }`}
                     >
                         <ChevronLeft className="w-4 h-4" />
@@ -130,8 +166,8 @@ export default function DerivationBlock({
                         onClick={goToNext}
                         disabled={currentStep === totalSteps - 1}
                         className={`flex items-center gap-2 px-4 py-2 rounded-xl transition-all ${currentStep === totalSteps - 1
-                                ? "opacity-30 cursor-not-allowed"
-                                : "bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 hover:text-blue-200"
+                            ? "opacity-30 cursor-not-allowed"
+                            : "bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 hover:text-blue-200"
                             }`}
                     >
                         Next Step
