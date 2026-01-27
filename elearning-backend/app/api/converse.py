@@ -16,7 +16,7 @@ from app.graph.user_state import (
     get_completed_exercises,
     record_chat_interaction
 )
-from app.chains.extractors import extract_topic_from_add_request, extract_component_to_remove, is_open_book_request
+from app.chains.extractors import extract_topic_from_add_request, extract_component_to_remove, is_open_book_request, extract_highlight_terms
 from app.chains.content import (
     get_section_by_id,
     get_related_sections,
@@ -843,6 +843,10 @@ async def handle_derivation(user_id: str, message: str, user_state: dict, contex
     if not section:
         section = get_section_by_id("7.3")  # Fallback to universal law (derivation-heavy)
     
+    # Detect step-by-step mode request
+    msg_lower = message.lower()
+    step_by_step = any(kw in msg_lower for kw in ["step by step", "step-by-step", "one step at a time", "slowly", "one at a time"])
+    
     # Extract derivations from section
     derivations = [
         item for item in section.get("content", [])
@@ -860,12 +864,13 @@ async def handle_derivation(user_id: str, message: str, user_state: dict, contex
                         "derivations": [
                             {"latex": d["latex"], "description": d.get("meta", "")}
                             for d in derivations
-                        ]
+                        ],
+                        "stepByStep": step_by_step  # Enable carousel mode when requested
                     },
                     "animation": "fadeIn"
                 }]
             ),
-            conversation_context={"showing_derivation": True, "section_id": current_id}
+            conversation_context={"showing_derivation": True, "section_id": current_id, "step_by_step": step_by_step}
         )
     
     return await handle_start_topic(user_id, message, context)
@@ -1962,6 +1967,11 @@ async def handle_agent_chat(user_id: str, message: str, user_state: dict, contex
         current_context=chat_context,
         initial_message=ai_response
     )
+    
+    # Extract key terms from user's message for dynamic highlighting
+    highlight_terms = extract_highlight_terms(message)
+    if highlight_terms:
+        ui.highlight_terms = highlight_terms
     
     # Check mastery and show "Ready for Quiz" button if threshold crossed
     try:

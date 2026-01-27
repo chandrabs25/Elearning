@@ -64,3 +64,71 @@ def extract_topic_from_add_request(message: str) -> str | None:
             return keyword
     
     return None
+
+
+def extract_highlight_terms(message: str) -> list[str]:
+    """Extract key terms from user message for dynamic highlighting.
+    
+    Identifies:
+    - Physics terms and concepts
+    - Symbols (G, g, M, R, etc.)
+    - Question subjects (what is X, explain Y)
+    """
+    msg = message.lower()
+    terms = []
+    
+    # Physics terms dictionary (term -> display form)
+    physics_terms = {
+        "gravitational constant": "gravitational constant",
+        "escape velocity": "escape velocity",
+        "escape speed": "escape speed",
+        "orbital velocity": "orbital velocity",
+        "orbital period": "orbital period",
+        "kepler": "Kepler",
+        "newton": "Newton",
+        "gravitation": "gravitation",
+        "gravity": "gravity",
+        "gravitational force": "gravitational force",
+        "gravitational potential": "gravitational potential",
+        "potential energy": "potential energy",
+        "kinetic energy": "kinetic energy",
+        "acceleration due to gravity": "acceleration due to gravity",
+        "satellite": "satellite",
+        "orbit": "orbit",
+        "ellipse": "ellipse",
+        "mass": "mass",
+        "radius": "radius",
+        "altitude": "altitude",
+        "height": "height",
+        "geosynchronous": "geosynchronous",
+        "geostationary": "geostationary",
+    }
+    
+    # Check for physics terms
+    for term, display in physics_terms.items():
+        if term in msg:
+            terms.append(display)
+    
+    # Extract symbols (single uppercase letters or common physics symbols)
+    # Pattern: standalone G, g, M, R, v, T, F, etc.
+    symbol_pattern = r'\b([GMRvFT]|g)\b'
+    symbols = re.findall(symbol_pattern, message)  # Use original case
+    terms.extend(symbols)
+    
+    # Extract "what is X" or "explain X" patterns
+    what_match = re.search(r'(?:what is|what\'s|explain|define)\s+(?:the\s+)?([a-zA-Z\s]+?)(?:\?|$|\.)', msg)
+    if what_match:
+        subject = what_match.group(1).strip()
+        if len(subject) > 2 and subject not in terms:
+            terms.append(subject)
+    
+    # Deduplicate while preserving order
+    seen = set()
+    unique_terms = []
+    for t in terms:
+        t_lower = t.lower()
+        if t_lower not in seen:
+            seen.add(t_lower)
+            unique_terms.append(t)
+    
+    return unique_terms[:5]  # Limit to 5 highlights

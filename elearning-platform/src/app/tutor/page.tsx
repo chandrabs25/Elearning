@@ -55,6 +55,7 @@ interface UISchema {
     progress?: ProgressData;
     celebration?: CelebrationData;
     suggested_actions?: SuggestedAction[];
+    highlight_terms?: string[];  // Terms to highlight in content
 }
 
 interface ConversationContext {
@@ -638,27 +639,34 @@ export default function TutorV2Page() {
                                 gridTemplateColumns: calculateGridColumns(ui.panels)
                             } : undefined}
                         >
-                            {ui.panels.map((panel, index) => (
-                                <DynamicPanel
-                                    key={`${panel.type}-${index}`}
-                                    panel={panel}
-                                    index={index}
-                                    totalPanels={ui.panels.length}
-                                    layout={ui.layout}
-                                    onAction={(action) => sendTutorMessage(action, true)}
-                                    calculatedWidth={ui.layout === "dynamic" ? calculatePanelWidth(panel, ui.panels) : undefined}
-                                    isFocused={focusedPanelIndex === index}
-                                    onFocus={() => setFocusedPanelIndex(index)}
-                                    onClose={() => handleClosePanel(index)}
-                                    // Chat-specific props
-                                    chatMessages={panel.type === "ChatPanel" ? chatMessages : undefined}
-                                    isChatTyping={panel.type === "ChatPanel" ? isChatTyping : undefined}
-                                    chatSuggestions={panel.type === "ChatPanel" ? chatSuggestions : undefined}
-                                    onChatSuggestionClick={panel.type === "ChatPanel" ? handleChatSuggestionClick : undefined}
-                                    // Exercise-specific props
-                                    onExerciseSubmit={panel.type === "ExercisePanel" ? handleExerciseSubmit : undefined}
-                                />
-                            ))}
+                            {ui.panels.map((panel, index) => {
+                                // Inject highlight_terms into ExplanationPanel props
+                                const panelWithHighlights = panel.type === "ExplanationPanel" && ui.highlight_terms?.length
+                                    ? { ...panel, props: { ...panel.props, highlightTerms: ui.highlight_terms } }
+                                    : panel;
+
+                                return (
+                                    <DynamicPanel
+                                        key={`${panel.type}-${index}`}
+                                        panel={panelWithHighlights}
+                                        index={index}
+                                        totalPanels={ui.panels.length}
+                                        layout={ui.layout}
+                                        onAction={(action) => sendTutorMessage(action, true)}
+                                        calculatedWidth={ui.layout === "dynamic" ? calculatePanelWidth(panel, ui.panels) : undefined}
+                                        isFocused={focusedPanelIndex === index}
+                                        onFocus={() => setFocusedPanelIndex(index)}
+                                        onClose={() => handleClosePanel(index)}
+                                        // Chat-specific props
+                                        chatMessages={panel.type === "ChatPanel" ? chatMessages : undefined}
+                                        isChatTyping={panel.type === "ChatPanel" ? isChatTyping : undefined}
+                                        chatSuggestions={panel.type === "ChatPanel" ? chatSuggestions : undefined}
+                                        onChatSuggestionClick={panel.type === "ChatPanel" ? handleChatSuggestionClick : undefined}
+                                        // Exercise-specific props
+                                        onExerciseSubmit={panel.type === "ExercisePanel" ? handleExerciseSubmit : undefined}
+                                    />
+                                );
+                            })}
                         </motion.div>
                     )}
                 </AnimatePresence>

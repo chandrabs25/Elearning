@@ -44,6 +44,7 @@ class UISchema(BaseModel):
     progress: ProgressData | None = None  # Progress bar data
     celebration: CelebrationData | None = None  # Celebration modal data
     suggested_actions: list[dict] = []  # Action buttons: [{"label": "Quiz Me", "action": "quiz", "primary": True}]
+    highlight_terms: list[str] = []  # Terms to highlight in content (for dynamic focus)
 
 
 def welcome_schema(user_name: str = None, last_section: dict = None) -> UISchema:
@@ -361,20 +362,8 @@ def multi_panel_schema(
         )
     )
     
-    # Add related topics if provided (as auxiliary - 25%)
-    if related_sections:
-        panels.append(
-            PanelContent(
-                type="NavigationMap",
-                props={
-                    "sections": related_sections,
-                    "title": "Related Topics"
-                },
-                animation="slideInRight",
-                role="auxiliary",
-                width="25%"
-            )
-        )
+    # NavigationMap removed - only show the two ExplanationPanels in multi-panel mode
+    # Navigation will be restored when the added panel is closed
     
     return UISchema(
         layout="dynamic",

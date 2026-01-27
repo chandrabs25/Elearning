@@ -21,30 +21,91 @@ const cleanLatex = (latex: string) => {
 };
 
 // Helper to parse text with inline LaTeX ($...$) and render InlineMath components
-const parseInlineLatex = (text: string): React.ReactNode => {
+const parseInlineLatex = (text: string, highlightTerms: string[] = []): React.ReactNode => {
     if (!text) return null;
 
-    const regex = /\$([^$]+)\$/g;
+    // First apply highlighting, then parse LaTeX
+    let processedText = text;
+
+    // Apply highlighting before LaTeX parsing
+    const highlightedParts: React.ReactNode[] = [];
+
+    // If no highlights, just parse LaTeX
+    if (highlightTerms.length === 0) {
+        const regex = /\$([^$]+)\$/g;
+        const parts: React.ReactNode[] = [];
+        let lastIndex = 0;
+        let match;
+        let key = 0;
+
+        while ((match = regex.exec(text)) !== null) {
+            if (match.index > lastIndex) {
+                parts.push(text.slice(lastIndex, match.index));
+            }
+            parts.push(
+                <InlineMath key={key++}>{match[1]}</InlineMath>
+            );
+            lastIndex = regex.lastIndex;
+        }
+
+        if (lastIndex < text.length) {
+            parts.push(text.slice(lastIndex));
+        }
+
+        return parts.length > 0 ? parts : text;
+    }
+
+    // With highlights: parse LaTeX and apply highlights to non-LaTeX parts
+    const latexRegex = /\$([^$]+)\$/g;
     const parts: React.ReactNode[] = [];
     let lastIndex = 0;
     let match;
     let key = 0;
 
-    while ((match = regex.exec(text)) !== null) {
+    while ((match = latexRegex.exec(text)) !== null) {
         if (match.index > lastIndex) {
-            parts.push(text.slice(lastIndex, match.index));
+            // Apply highlights to text before LaTeX
+            parts.push(applyHighlights(text.slice(lastIndex, match.index), highlightTerms, key));
+            key++;
         }
         parts.push(
-            <InlineMath key={key++}>{match[1]}</InlineMath>
+            <InlineMath key={`latex-${key++}`}>{match[1]}</InlineMath>
         );
-        lastIndex = regex.lastIndex;
+        lastIndex = latexRegex.lastIndex;
     }
 
     if (lastIndex < text.length) {
-        parts.push(text.slice(lastIndex));
+        parts.push(applyHighlights(text.slice(lastIndex), highlightTerms, key));
     }
 
     return parts.length > 0 ? parts : text;
+};
+
+// Helper to apply highlight styling to matched terms
+const applyHighlights = (text: string, terms: string[], keyBase: number): React.ReactNode => {
+    if (!terms.length || !text) return text;
+
+    // Create regex pattern from terms (case insensitive)
+    const escapedTerms = terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const pattern = new RegExp(`(${escapedTerms.join('|')})`, 'gi');
+
+    const parts = text.split(pattern);
+
+    return parts.map((part, i) => {
+        const isHighlighted = terms.some(t => t.toLowerCase() === part.toLowerCase());
+        if (isHighlighted) {
+            return (
+                <mark
+                    key={`${keyBase}-${i}`}
+                    className="bg-yellow-500/30 text-yellow-200 px-1 rounded-sm font-medium animate-pulse"
+                    style={{ animation: 'pulse 2s ease-in-out infinite' }}
+                >
+                    {part}
+                </mark>
+            );
+        }
+        return part;
+    });
 };
 
 interface ContentItem {
@@ -66,6 +127,7 @@ interface ExplanationPanelProps {
     title: string;
     content: ContentItem[];
     animated?: boolean;
+    highlightTerms?: string[];  // Terms to highlight with glow effect
     onAction?: (action: string) => void;
 }
 
@@ -73,6 +135,7 @@ export default function ExplanationPanel({
     title,
     content,
     animated = true,
+    highlightTerms = [],
 }: ExplanationPanelProps) {
     return (
         <div className="p-6 bg-neutral-900/50 rounded-2xl border border-white/5 h-full max-h-full min-h-0 overflow-y-auto scrollbar-thin scrollbar-thumb-white/40 hover:scrollbar-thumb-white/60 flex flex-col">
@@ -94,7 +157,7 @@ export default function ExplanationPanel({
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: index * 0.1 }}
                     >
-                        {renderContentItem(item)}
+                        {renderContentItem(item, highlightTerms)}
                     </motion.div>
                 ))}
             </div>
@@ -102,12 +165,12 @@ export default function ExplanationPanel({
     );
 }
 
-function renderContentItem(item: ContentItem) {
+function renderContentItem(item: ContentItem, highlightTerms: string[] = []) {
     switch (item.type) {
         case "paragraph":
             return (
                 <p className="text-white/70 leading-relaxed text-lg">
-                    {parseInlineLatex(item.content || "")}
+                    {parseInlineLatex(item.content || "", highlightTerms)}
                 </p>
             );
 
@@ -117,7 +180,7 @@ function renderContentItem(item: ContentItem) {
                     <span className="text-white/60 font-semibold whitespace-nowrap">
                         {item.label}
                     </span>
-                    <p className="text-white/60">{parseInlineLatex(item.content || "")}</p>
+                    <p className="text-white/60">{parseInlineLatex(item.content || "", highlightTerms)}</p>
                 </div>
             );
 
@@ -177,7 +240,7 @@ function renderContentItem(item: ContentItem) {
                             {item.label}
                         </span>
                     </div>
-                    <p className="text-white/70">{parseInlineLatex(item.question || "")}</p>
+                    <p className="text-white/70">{parseInlineLatex(item.question || "", highlightTerms)}</p>
                 </div>
             );
 
