@@ -54,6 +54,159 @@ router = APIRouter()
 # Mastery threshold for section completion
 MASTERY_THRESHOLD = 70
 
+# Default section ID for fallbacks (first section in gravity chapter)
+DEFAULT_SECTION_ID = "7.1"
+
+
+def get_current_section_id(user_state: dict, fallback: str = None) -> str:
+    """Extract current section ID from user state with fallback."""
+    if fallback is None:
+        fallback = DEFAULT_SECTION_ID
+    current = user_state.get("current_concept") if user_state else None
+    return current.get("sectionId", current.get("id")) if current else fallback
+
+
+def extract_mcq_option(answer: str) -> str:
+    """Extract MCQ option letter (A, B, C, D) from various input formats.
+    
+    Handles: 'A', 'a', 'Option A', 'The answer is B', 'B)', 'b.', etc.
+    """
+    answer = answer.strip().upper()
+    # Check for letter patterns
+    for letter in ['A', 'B', 'C', 'D']:
+        # Match standalone letter or "OPTION X" pattern
+        if answer == letter or answer.startswith(f"OPTION {letter}") or answer.startswith(f"{letter}.") or answer.startswith(f"{letter})"):
+            return letter
+        # Match "THE ANSWER IS X" or similar
+        if f" {letter}" in answer or answer.endswith(letter):
+            return letter
+    # Fallback: first character if it's a letter
+    if answer and answer[0] in 'ABCD':
+        return answer[0]
+    return answer
+
+
+async def evaluate_mcq_answer(
+    question: str,
+    options: list[str],
+    correct_option: str,
+    student_answer: str
+) -> dict:
+    """Use LLM to evaluate MCQ answer - judges both choice and reasoning.
+    
+    Returns:
+        {
+            "is_correct": bool,      # True if correct option chosen or reasoning is valid
+            "is_partial": bool,      # True if reasoning shows understanding but wrong option
+            "chosen_option": str,    # The option letter the student chose (A/B/C/D or None)
+            "feedback": str          # LLM-generated feedback
+        }
+    """
+    from groq import AsyncGroq
+    from app.config import settings
+    import json
+    
+    # Normalize correct option to letter
+    correct_letter = extract_mcq_option(correct_option)
+    
+    # Format options for prompt
+    options_text = "\n".join([f"{chr(65+i)}. {opt}" for i, opt in enumerate(options)]) if options else ""
+    
+    prompt = f"""You are evaluating a student's answer to a multiple-choice physics question.
+
+QUESTION: {question}
+
+OPTIONS:
+{options_text}
+
+CORRECT ANSWER: {correct_letter}
+
+STUDENT'S RESPONSE: "{student_answer}"
+
+Analyze the student's response and determine:
+1. Did they explicitly or implicitly choose the correct option ({correct_letter})?
+2. Even if they chose wrong, does their reasoning show correct understanding?
+
+Return a JSON object:
+{{
+    "chosen_option": "A/B/C/D or null if unclear",
+    "is_correct": true/false (true if correct option OR correct reasoning),
+    "is_partial": true/false (true if wrong option but good reasoning),
+    "feedback": "brief feedback explaining if correct/incorrect and why"
+}}
+
+Be generous with partial credit if the student shows understanding but picked wrong letter.
+Return ONLY the JSON, no markdown."""
+    
+    try:
+        client = AsyncGroq(api_key=settings.groq_api_key)
+        response = await client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile",
+            temperature=0.1
+        )
+        content = response.choices[0].message.content.strip()
+        # Clean JSON if wrapped in markdown
+        if content.startswith("```"):
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+        
+        result = json.loads(content)
+        return {
+            "is_correct": result.get("is_correct", False),
+            "is_partial": result.get("is_partial", False),
+            "chosen_option": result.get("chosen_option"),
+            "feedback": result.get("feedback", "Answer evaluated.")
+        }
+    except Exception as e:
+        print(f"MCQ evaluation error: {e}")
+        # Fallback to pattern matching
+        user_letter = extract_mcq_option(student_answer)
+        is_correct = user_letter == correct_letter
+        return {
+            "is_correct": is_correct,
+            "is_partial": False,
+            "chosen_option": user_letter,
+            "feedback": f"{'Correct!' if is_correct else f'The correct answer was {correct_letter}.'}"
+        }
+
+
+def _maybe_create_celebration(concept_id: str, result: dict):
+    """Create celebration schema if section was just mastered.
+    
+    Returns CelebrationData or None.
+    """
+    if result.get("completed") and result.get("new_level", 0) >= MASTERY_THRESHOLD:
+        next_id = get_next_section_id(concept_id)
+        next_title = get_section_title(next_id) if next_id else None
+        section_title = get_section_title(concept_id) or concept_id
+        return celebration_schema(
+            section_title=section_title,
+            mastery_percent=result["new_level"],
+            next_section_id=next_id,
+            next_section_title=next_title
+        )
+    return None
+
+
+def _get_feedback_prompt(result: dict, is_correct: bool, is_partial: bool = False, question_type: str = "quiz") -> str:
+    """Generate guided prompt based on answer result.
+    
+    Returns appropriate next_prompt string.
+    """
+    mastery = result.get("new_level", 0)
+    
+    if mastery >= MASTERY_THRESHOLD:
+        return "🎉 Section mastered! Type 'next' to continue."
+    
+    if is_correct:
+        return f"Excellent! {mastery}% mastery. Try 'quiz me' for more!"
+    elif is_partial:
+        return f"Almost there! {mastery}% mastery. Try again or ask for help."
+    else:
+        return f"Keep trying! {mastery}% mastery. Type 'explain' for help."
+
 
 class ConversationRequest(BaseModel):
     user_id: str
@@ -184,17 +337,16 @@ async def converse(req: ConversationRequest):
         # Applies to: ChatPanel, QuizCard (ask mode), MCQCard (ask mode), ExercisePanel
         intent = "open_chat"  # Routes to chat handler with current section
         message = req.message
-    elif req.message and "?" in req.message:
-        # Question mark with main panel focused = doubt - use RAG
-        # This finds the most relevant section for the question
-        intent = "ask_doubt"
-        message = req.message
-        context["initial_question"] = message
     else:
-        # Free-form text without ? - use LLM classifier
+        # All other text - use LLM classifier to decide between:
+        # - TOPIC: "Teach me gravity" → Show section (no RAG)
+        # - DOUBT: "Why does the moon not fall?" → RAG answer
+        # - Other intents: QUIZ, NAVIGATE, etc.
         from app.agents.intent_classifier import classify_intent_llm
         intent = await classify_intent_llm(req.message, context)
         message = req.message
+        if intent == "ask_doubt":
+            context["initial_question"] = message
     
     # 3. Route to handler using registry pattern
     # Define handler registry - maps intent to (handler, args_type)
@@ -224,10 +376,10 @@ async def converse(req: ConversationRequest):
         if intent == "add_summary":
             return await handle_add_summary(req.user_id, user_state, context)
         if intent == "open_chat":
-            return await handle_open_chat(req.user_id, message, user_state, context)
+            return await handle_agent_chat(req.user_id, message, user_state, context)
         if intent == "ask_doubt":
             context["initial_question"] = message
-            return await handle_open_chat(req.user_id, message, user_state, context)
+            return await handle_agent_chat(req.user_id, message, user_state, context)
         if intent == "take_quiz":
             return await handle_quiz_request(req.user_id, message, user_state, context)
         if intent == "generate_mcq":
@@ -591,9 +743,9 @@ async def handle_continue(user_id: str, user_state: dict, context: dict) -> Conv
             )
     
     # No history - start from beginning
-    section = get_section_by_id("7.1")
+    section = get_section_by_id(DEFAULT_SECTION_ID)
     if section:
-        await update_current_concept(user_id, "7.1")
+        await update_current_concept(user_id, DEFAULT_SECTION_ID)
         return await _build_explanation_response(user_id, section, context)
     
     raise HTTPException(status_code=500, detail="Content not found")
@@ -643,8 +795,7 @@ async def handle_navigate(user_id: str, message: str, user_state: dict, context:
     """Handle navigation requests (next, previous, go to)."""
     msg = message.lower()
     
-    current = user_state.get("current_concept") if user_state else None
-    current_id = current.get("sectionId", current.get("id")) if current else "7.1"
+    current_id = get_current_section_id(user_state, DEFAULT_SECTION_ID)
     
     if "next" in msg:
         # Get next section
@@ -673,12 +824,11 @@ async def handle_navigate(user_id: str, message: str, user_state: dict, context:
 
 async def handle_derivation(user_id: str, message: str, user_state: dict, context: dict) -> ConversationResponse:
     """Handle derivation/formula requests."""
-    current = user_state.get("current_concept") if user_state else None
-    current_id = current.get("sectionId", current.get("id")) if current else "7.3"
+    current_id = get_current_section_id(user_state, "7.3")  # Default to 7.3 for derivations
     
     section = get_section_by_id(current_id)
     if not section:
-        section = get_section_by_id("7.3")  # Fallback to universal law
+        section = get_section_by_id("7.3")  # Fallback to universal law (derivation-heavy)
     
     # Extract derivations from section
     derivations = [
@@ -773,48 +923,46 @@ async def handle_show_progress(user_id: str, user_state: dict, context: dict) ->
 async def handle_answer(user_id: str, answer: str, context: dict) -> ConversationResponse:
     """Handle quiz/MCQ answer evaluation."""
     question_type = context.get("question_type", "open")
-    concept_id = context.get("current_section", "7.1")
+    concept_id = context.get("current_section", DEFAULT_SECTION_ID)
     
-    # 1. Handle MCQ Answer
+    # 1. Handle MCQ Answer - Use LLM to evaluate choice AND reasoning
     if question_type == "mcq":
-        correct_option = context.get("correct_option")  # e.g., "B"
-        user_selection = answer.strip().split()[0].upper()
+        question = context.get("question", "")
+        options = context.get("options", [])  # The list of option texts
+        correct_option = context.get("correct_option", "")  # e.g., "B" or "Option B"
         
-        is_correct = False
-        if correct_option and (user_selection == correct_option or answer == correct_option):
-            is_correct = True
+        # Use LLM to evaluate - it can judge reasoning even if letter is wrong
+        evaluation = await evaluate_mcq_answer(
+            question=question,
+            options=options,
+            correct_option=correct_option,
+            student_answer=answer
+        )
         
-        # Update mastery (dynamic - can decrease)
-        delta = 10 if is_correct else -5
+        is_correct = evaluation["is_correct"]
+        is_partial = evaluation["is_partial"]
+        feedback = evaluation["feedback"]
+        
+        # Score based on correctness
+        if is_correct:
+            delta = 10
+            status = "success"
+            feedback = f"✅ {feedback}"
+        elif is_partial:
+            delta = 5  # Partial credit for good reasoning
+            status = "warning"
+            feedback = f"⚠️ {feedback}"
+        else:
+            delta = -5
+            status = "error"
+            feedback = f"❌ {feedback}"
+        
+        # Update mastery
         result = await update_mastery(user_id, concept_id, delta)
         
-        if is_correct:
-            feedback = f"✅ Correct! The answer is indeed {correct_option}."
-            status = "success"
-        else:
-            feedback = f"❌ Not quite. The correct answer was {correct_option}."
-            status = "error"
-        
-        # Check if section is now complete
-        celebration = None
-        if result["completed"] and result["new_level"] >= MASTERY_THRESHOLD:
-            next_id = get_next_section_id(concept_id)
-            next_title = get_section_title(next_id) if next_id else None
-            section_title = get_section_title(concept_id) or concept_id
-            celebration = celebration_schema(
-                section_title=section_title,
-                mastery_percent=result["new_level"],
-                next_section_id=next_id,
-                next_section_title=next_title
-            )
-        
-        # Build guided prompt based on result
-        if result["new_level"] >= MASTERY_THRESHOLD:
-            next_prompt = "🎉 Section mastered! Type 'next' to continue."
-        elif is_correct:
-            next_prompt = f"Great! {result['new_level']}% mastery. Keep going with 'quiz me'!"
-        else:
-            next_prompt = f"Don't give up! {result['new_level']}% mastery. Try 'quiz me' again or ask for help."
+        # Use helpers for celebration and prompt
+        celebration = _maybe_create_celebration(concept_id, result)
+        next_prompt = _get_feedback_prompt(result, is_correct, is_partial)
         
         ui = feedback_schema(
             message=feedback,
@@ -869,28 +1017,9 @@ async def handle_answer(user_id: str, answer: str, context: dict) -> Conversatio
         
         result = await update_mastery(user_id, concept_id, delta)
         
-        # Check for section completion
-        celebration = None
-        if result["completed"] and result["new_level"] >= MASTERY_THRESHOLD:
-            next_id = get_next_section_id(concept_id)
-            next_title = get_section_title(next_id) if next_id else None
-            section_title = get_section_title(concept_id) or concept_id
-            celebration = celebration_schema(
-                section_title=section_title,
-                mastery_percent=result["new_level"],
-                next_section_id=next_id,
-                next_section_title=next_title
-            )
-        
-        # Build guided prompt based on result
-        if result["new_level"] >= MASTERY_THRESHOLD:
-            next_prompt = "🎉 Section mastered! Type 'next' to continue."
-        elif is_correct:
-            next_prompt = f"Excellent! {result['new_level']}% mastery. Try 'quiz me' for more!"
-        elif is_partial:
-            next_prompt = f"Almost there! {result['new_level']}% mastery. Try again or ask for help."
-        else:
-            next_prompt = f"Keep trying! {result['new_level']}% mastery. Type 'explain' for help."
+        # Use helpers for celebration and prompt
+        celebration = _maybe_create_celebration(concept_id, result)
+        next_prompt = _get_feedback_prompt(result, is_correct, is_partial)
         
         ui = feedback_schema(
             message=feedback_msg,
@@ -918,8 +1047,7 @@ async def handle_answer(user_id: str, answer: str, context: dict) -> Conversatio
 
 async def handle_quiz_request(user_id: str, message: str, user_state: dict, context: dict) -> ConversationResponse:
     """Handle 'take quiz' intent - fetch an example problem or fallback to MCQ."""
-    current = user_state.get("current_concept") if user_state else None
-    current_id = current.get("sectionId", current.get("id")) if current else "7.2"
+    current_id = get_current_section_id(user_state, DEFAULT_SECTION_ID)
     
     exercises = get_exercises_for_section(current_id)
     
@@ -1005,7 +1133,7 @@ async def handle_quiz_answer(user_id: str, answer: str, context: dict) -> Conver
     # Get quiz context from the conversation context
     question = context.get("question", "")
     solution = context.get("solution_meta") or context.get("solution_latex") or ""
-    concept_id = context.get("current_section") or "7.3"
+    concept_id = context.get("current_section") or DEFAULT_SECTION_ID
     
     if not question:
         # No active quiz question
@@ -1042,28 +1170,9 @@ async def handle_quiz_answer(user_id: str, answer: str, context: dict) -> Conver
     
     result = await update_mastery(user_id, concept_id, delta)
     
-    # Check for section completion
-    celebration = None
-    if result["completed"] and result["new_level"] >= MASTERY_THRESHOLD:
-        next_id = get_next_section_id(concept_id)
-        next_title = get_section_title(next_id) if next_id else None
-        section_title = get_section_title(concept_id) or concept_id
-        celebration = celebration_schema(
-            section_title=section_title,
-            mastery_percent=result["new_level"],
-            next_section_id=next_id,
-            next_section_title=next_title
-        )
-    
-    # Build guided prompt based on result
-    if result["new_level"] >= MASTERY_THRESHOLD:
-        next_prompt = "🎉 Section mastered! Type 'next' to continue."
-    elif is_correct:
-        next_prompt = f"Excellent! {result['new_level']}% mastery. Try 'quiz me' for more!"
-    elif is_partial:
-        next_prompt = f"Almost there! {result['new_level']}% mastery. Try again or ask for help."
-    else:
-        next_prompt = f"Keep trying! {result['new_level']}% mastery. Type 'explain' for help."
+    # Use helpers for celebration and prompt
+    celebration = _maybe_create_celebration(concept_id, result)
+    next_prompt = _get_feedback_prompt(result, is_correct, is_partial)
     
     ui = feedback_schema(
         message=feedback_msg,
@@ -1096,8 +1205,7 @@ async def handle_mcq_request(user_id: str, message: str, user_state: dict, conte
     from app.config import settings
     import json
     
-    current = user_state.get("current_concept") if user_state else None
-    current_id = current.get("sectionId", current.get("id")) if current else "7.1"
+    current_id = get_current_section_id(user_state, DEFAULT_SECTION_ID)
     section = get_section_by_id(current_id)
     
     title = section["section_title"] if section else "Gravitation"
@@ -1262,7 +1370,7 @@ async def handle_exercise_answer(user_id: str, answer: str, context: dict) -> Co
     from app.agents.tutor_agent import evaluate_quiz_answer
     
     exercise_label = context.get("exercise_label")
-    section_id = context.get("section_id", "7.1")
+    section_id = context.get("section_id", DEFAULT_SECTION_ID)
     exercise_question = context.get("exercise_question", "")
     is_bonus = context.get("is_bonus", True)
     
@@ -1299,27 +1407,9 @@ async def handle_exercise_answer(user_id: str, answer: str, context: dict) -> Co
         
         feedback_msg = msg_prefix + feedback
         
-        # Check for celebration
-        celebration = None
-        if result.get("completed") and result.get("new_level", 0) >= MASTERY_THRESHOLD:
-            next_id = get_next_section_id(section_id)
-            next_title = get_section_title(next_id) if next_id else None
-            section_title = get_section_title(section_id) or section_id
-            celebration = celebration_schema(
-                section_title=section_title,
-                mastery_percent=result["new_level"],
-                next_section_id=next_id,
-                next_section_title=next_title
-            )
-        
-        # Build guided prompt
-        new_mastery = result.get("new_level", 0)
-        if new_mastery >= MASTERY_THRESHOLD:
-            next_prompt = "🎉 Section mastered! Type 'next' to continue."
-        elif is_correct:
-            next_prompt = f"Well done! {new_mastery}% mastery. Try more exercises or 'next' section."
-        else:
-            next_prompt = f"Keep practicing! {new_mastery}% mastery. Try another exercise."
+        # Use helpers for celebration and prompt
+        celebration = _maybe_create_celebration(section_id, result)
+        next_prompt = _get_feedback_prompt(result, is_correct, is_partial)
         
         ui = feedback_schema(
             message=feedback_msg,
@@ -1622,7 +1712,8 @@ async def handle_add_summary(user_id: str, user_state: dict, context: dict) -> C
             }
         )
     else:
-        return await handle_summary(user_id, user_state)
+        # No current section - show progress instead
+        return await handle_show_progress(user_id, user_state, context)
 
 
 # === Helpers ===
@@ -1784,102 +1875,123 @@ async def _build_explanation_response(
     )
 
 
-async def handle_open_chat(user_id: str, message: str, user_state: dict, context: dict) -> ConversationResponse:
-    """Handle 'open chat' intent - add ChatPanel alongside current content."""
+async def handle_agent_chat(user_id: str, message: str, user_state: dict, context: dict) -> ConversationResponse:
+    """Handle chat/doubt through the stateful tutor agent.
+    
+    Routes message through LangGraph agent which maintains conversation state
+    and can perform multi-turn Socratic teaching.
+    """
+    from app.agents.agent_router import invoke_tutor_agent
+    from app.chains.content import extract_section_text
+    
     current = user_state.get("current_concept") if user_state else None
-    current_id = current.get("sectionId", current.get("id")) if current else None
-    current_section = get_section_by_id(current_id) if current_id else None
+    current_id = get_current_section_id(user_state, DEFAULT_SECTION_ID)
+    current_section = get_section_by_id(current_id)
     
-    # Check if this is a doubt/question
-    initial_question = context.get("initial_question") or (message if message and "?" in message else None)
+    # Get section content for agent context
+    section_content = None
+    if current_section:
+        section_content = format_content_for_ui(current_section)
+        # Use shared helper for text extraction
+        context["section_content"] = extract_section_text(current_section)
+        context["section_title"] = current_section.get("section_title")
     
-    # Check if an interactive panel is focused (follow-ups use current section, no RAG)
-    # Applies to: ChatPanel, QuizCard, MCQCard, ExercisePanel
-    interactive_panel_focused = context.get("focused_panel") in ("chat", "quiz", "mcq", "exercise")
+    # Invoke the stateful agent
+    agent_result = await invoke_tutor_agent(user_id, message, context)
     
-    # Use RAG search ONLY for main panel focused doubts, not interactive panel follow-ups
-    retrieved_sections = []
-    if initial_question and not interactive_panel_focused:
-        try:
-            from app.chains.content_search import search_relevant_sections, get_section_suggestions
-            retrieved_sections = await search_relevant_sections(initial_question, top_k=3)
-        except Exception as e:
-            print(f"RAG search error: {e}")
-            retrieved_sections = []
+    if not agent_result.get("success"):
+        # Fallback to simple response on error
+        return ConversationResponse(
+            ui=chat_panel_schema(
+                existing_panels=[],
+                current_context={"error": True},
+                initial_message=agent_result.get("response", "Something went wrong.")
+            ),
+            conversation_context=context
+        )
     
+    # Build UI with agent response
+    ai_response = agent_result.get("response", "")
+    agent_mode = agent_result.get("mode", "normal")
+    
+    # Build existing panels with current section
     existing_panels = []
-    primary_section = None
-    
-    # For doubts: show RAG-matched section as primary (not stale current section)
-    if initial_question and retrieved_sections:
-        # Get the top RAG match as primary content
-        top_match = retrieved_sections[0]
-        primary_section = get_section_by_id(top_match["section_id"])
-        if primary_section:
-            content = format_content_for_ui(primary_section)
-            existing_panels.append(
-                PanelContent(
-                    type="ExplanationPanel",
-                    props={
-                        "title": primary_section["section_title"],
-                        "content": content,
-                        "animated": False,
-                        "section_id": top_match["section_id"]
-                    },
-                    role="primary"
-                )
-            )
-    elif current_section:
-        # No doubt - show current section (for "open chat" without question)
-        primary_section = current_section
-        content = format_content_for_ui(current_section)
+    if current_section:
         existing_panels.append(
             PanelContent(
                 type="ExplanationPanel",
                 props={
                     "title": current_section["section_title"],
-                    "content": content,
-                    "animated": False
+                    "content": section_content,
+                    "animated": False,
+                    "section_id": current_id
                 },
                 role="primary"
             )
         )
-    # Otherwise: just ChatPanel alone (focus mode)
     
     chat_context = {
-        "current_section_id": primary_section["section_id"] if primary_section else current_id,
-        "current_section_title": primary_section["section_title"] if primary_section else None,
+        "current_section_id": current_id,
+        "current_section_title": current_section["section_title"] if current_section else None,
         "user_id": user_id,
-        # Pass retrieved content to chat for RAG
-        "retrieved_sections": retrieved_sections
+        "agent_mode": agent_mode
     }
     
     ui = chat_panel_schema(
         existing_panels=existing_panels,
         current_context=chat_context,
-        initial_message=initial_question
+        initial_message=ai_response
     )
     
-    # Add "Also see" suggestions for other matched sections (not the primary)
-    if retrieved_sections and len(retrieved_sections) > 1:
-        from app.chains.content_search import get_section_suggestions
-        # Skip the first one (already shown as primary)
-        ui.suggested_actions = get_section_suggestions(retrieved_sections[1:])
+    # Check mastery and show "Ready for Quiz" button if threshold crossed
+    try:
+        from app.graph.user_state import get_user_state
+        user_mastery_state = await get_user_state(user_id)
+        current_mastery = 0
+        if user_mastery_state and user_mastery_state.get("mastery"):
+            current_mastery = user_mastery_state["mastery"].get(current_id, 0)
+        
+        if current_mastery >= MASTERY_THRESHOLD:
+            ui.suggested_actions = [
+                {
+                    "label": "🎯 Ready for Quiz!",
+                    "action": "generate_mcq",
+                    "primary": True,
+                    "tooltip": f"Mastery: {current_mastery}% — Test your knowledge!"
+                },
+                {
+                    "label": "📝 Try Exercises",
+                    "action": "show_exercises",
+                    "primary": False
+                }
+            ]
+    except Exception as e:
+        print(f"Mastery check error: {e}")
+    
+    # Update context with agent state for persistence
+    new_context = {
+        **context,
+        "chat_open": True,
+        "current_section": current_id,
+        "focused_panel": "chat",
+        "agent_mode": agent_mode,
+        "current_prereq_id": agent_result.get("current_prereq_id"),
+        "current_prereq_title": agent_result.get("current_prereq_title"),
+        "prereq_question": agent_result.get("prereq_question"),
+        "prerequisite_chain": agent_result.get("prerequisite_chain", [])
+    }
     
     return ConversationResponse(
         ui=ui,
-        conversation_context={
-            **context,
-            "chat_open": True,
-            "current_section": current_id,
-            "focused_panel": "chat",
-            "retrieved_sections": [s["section_id"] for s in retrieved_sections]
-        },
+        conversation_context=new_context,
         debug={
-            "has_current_content": current_section is not None,
-            "rag_sections_found": len(retrieved_sections)
+            "agent_mode": agent_mode,
+            "success": True
         }
     )
+
+
+# NOTE: handle_open_chat was removed - routing now uses handle_agent_chat
 
 
 # ==================== Text-to-Speech Endpoint ====================

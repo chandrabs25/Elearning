@@ -73,19 +73,23 @@ User message: "{message}"
 Available intents:
 - CONTINUE: User wants to continue, agrees, says yes/ok/sure
 - NAVIGATE: User wants to go to next/previous section, go to a specific section
-- TOPIC: User wants to learn about a topic, asks "teach me", "explain", "what is"
+- TOPIC: User wants to START LEARNING a topic from the beginning. Examples: "teach me gravity", "explain Newton's laws", "what is escape velocity", "show me section 7.1"
+- DOUBT: User has a SPECIFIC QUESTION that needs to be ANSWERED using the textbook. Examples: "why does the moon not fall?", "how do I calculate orbital velocity?", "I don't understand this formula", "what's the difference between weight and mass?"
 - QUIZ: User wants a quiz, says "quiz me", "test me", "give me a problem"
 - MCQ: User specifically wants multiple choice questions
 - EXERCISES: User wants practice exercises from the chapter
-- DERIVATION: User wants to see a formula, equation, or derivation
+- DERIVATION: User wants to see a formula, equation, or derivation step-by-step
 - SUMMARY: User asks about their progress, "how am I doing"
 - ADD_CONTENT: User wants to add content to current view, "also show", "beside this"
-- ADD_SUMMARY: User wants to add summary panel to view
 - REMOVE: User wants to hide/remove a panel
-- CHAT: User wants to open chat, says "help me", "ask AI", "I have a doubt"
-- DOUBT: User has a specific question about the content
+- CHAT: User wants to open chat, says "help me", "ask AI"
 
-Reply with ONLY the intent name (e.g., "QUIZ" or "TOPIC"), nothing else."""
+Reply with ONLY the intent name (e.g., "QUIZ" or "DOUBT"), nothing else.
+
+CRITICAL INSTRUCTION FOR "TOPIC" vs "DOUBT":
+- If the user asks for a DEFINITION or EXPLANATION of a main concept (e.g., "what is gravity", "explain escape velocity", "teach me potential energy"), classify as **TOPIC**. We want to show them the full lesson content, not just a chat answer.
+- Only use **DOUBT** if the user asks a specific "WHY" or "HOW" question, a comparison, or a niche question that isn't a requesting a full topic.
+- Bias: When in doubt, prefer TOPIC (showing content) over DOUBT (chat)."""
 
     try:
         response = await llm.ainvoke([HumanMessage(content=prompt)])

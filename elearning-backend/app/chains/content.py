@@ -39,6 +39,34 @@ def get_section_by_id(section_id: str) -> dict | None:
     return None
 
 
+def extract_section_text(section: dict, max_length: int = 3000) -> str:
+    """Extract plain text content from a section for LLM context.
+    
+    Consolidates text from text blocks and formulas from derivations.
+    Use this instead of duplicating text extraction logic.
+    
+    Args:
+        section: Section dict from get_section_by_id
+        max_length: Maximum character length to return
+        
+    Returns:
+        Plain text string suitable for LLM context
+    """
+    if not section:
+        return ""
+    
+    content_text = ""
+    for item in section.get("content", []):
+        if item.get("type") == "text":
+            content_text += item.get("body", "") + "\n"
+        elif item.get("type") == "derivation":
+            content_text += f"Formula: {item.get('latex', '')}\n"
+        elif item.get("type") == "equation":
+            content_text += f"Equation: {item.get('latex', '')}\n"
+    
+    return content_text[:max_length]
+
+
 def get_table_of_contents() -> list:
     """Get the table of contents."""
     data = load_gravity_content()

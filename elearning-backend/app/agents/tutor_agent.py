@@ -2,6 +2,7 @@
 from typing import TypedDict, Annotated, Literal
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
+from langgraph.checkpoint.memory import MemorySaver
 from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
@@ -37,7 +38,7 @@ class TutorState(TypedDict):
 async def get_concept_with_content(concept_id: str) -> dict:
     """Fetch concept details and content from Neo4j + gravity.json."""
     from app.graph.client import neo4j_client
-    from app.chains.content import get_section_by_id, format_content_for_ui
+    from app.chains.content import get_section_by_id, format_content_for_ui, extract_section_text
     
     # Get concept metadata and prerequisites from Neo4j
     query = """
@@ -56,20 +57,14 @@ async def get_concept_with_content(concept_id: str) -> dict:
     section = get_section_by_id(concept_id)
     content = format_content_for_ui(section) if section else []
     
-    # Convert content to text for LLM context
-    content_text = ""
-    if section:
-        for item in section.get("content", []):
-            if item.get("type") == "text":
-                content_text += item.get("body", "") + "\n"
-            elif item.get("type") == "derivation":
-                content_text += f"Formula: {item.get('latex', '')}\n"
+    # Use shared helper for text extraction
+    content_text = extract_section_text(section)
     
     return {
         "concept": result["c"] if result else None,
         "prerequisites": [p for p in (result["prerequisites"] if result else []) if p.get("id")],
         "content": content,
-        "content_text": content_text[:3000],
+        "content_text": content_text,
         "section_title": section.get("section_title") if section else None
     }
 
@@ -646,10 +641,13 @@ def build_tutor_graph() -> StateGraph:
     
     graph.add_edge("answer", END)
     
-    return graph.compile()
+    return graph.compile(checkpointer=memory)
 
 
-# Singleton compiled graph
+# Singleton checkpointer for state persistence
+memory = MemorySaver()
+
+# Singleton compiled graph with checkpointer
 tutor_agent = build_tutor_graph()
 
 
