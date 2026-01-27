@@ -228,13 +228,17 @@ ACTION_TO_INTENT = {
     "previous": "navigate",
     "quiz": "take_quiz",
     "quiz me": "take_quiz",
+    "take_quiz": "take_quiz",  # Frontend sends intent as action
     "open book quiz": "take_quiz_open",
     "mcq": "generate_mcq",
     "give me MCQs": "generate_mcq",
+    "generate_mcq": "generate_mcq",  # Backend sends intent as action
     "open book MCQs": "generate_mcq_open",
     "exercises": "show_exercises",
     "show exercises": "show_exercises",
+    "show_exercises": "show_exercises",  # Backend sends intent as action
     "continue": "continue_learning",
+    "continue_learning": "continue_learning",  # Backend sends intent as action
     "summary": "show_summary",
     "chat": "open_chat",
     "open chat": "open_chat",
@@ -314,7 +318,11 @@ async def converse(req: ConversationRequest):
     # Check if user has a current section
     has_current_section = bool(user_state and user_state.get("current_concept"))
     
-    if req.action:
+    if req.action and context.get("expecting_answer") and context.get("question_type") == "mcq":
+        # MCQ option click while expecting answer - treat action as the answer
+        intent = "submit_mcq_answer"
+        message = req.action  # The option text (e.g., "Option A")
+    elif req.action:
         # Button clicks - direct lookup, NO intent classification needed
         intent, action_payload = parse_action(req.action)
         if intent:
@@ -335,11 +343,9 @@ async def converse(req: ConversationRequest):
         intent = "submit_quiz_answer"
         message = req.message
         context["quiz_answer"] = req.message
-    elif context.get("focused_panel") in ("chat", "quiz", "mcq", "exercise"):
-        # Interactive panels focused in Ask mode - use current section context, no RAG
-        # This is for follow-up questions about the displayed content
-        # Applies to: ChatPanel, QuizCard (ask mode), MCQCard (ask mode), ExercisePanel
-        intent = "open_chat"  # Routes to chat handler with current section
+    elif context.get("focused_panel") == "chat":
+        # ChatPanel focused - route text through the Socratic agent
+        intent = "chat_message"  # Routes to agent for Socratic teaching
         message = req.message
     else:
         # All other text - use LLM classifier to decide between:
@@ -385,8 +391,10 @@ async def converse(req: ConversationRequest):
         if intent == "add_summary":
             return await handle_add_summary(req.user_id, user_state, context)
         if intent == "open_chat":
-            return await handle_agent_chat(req.user_id, message, user_state, context)
-        if intent == "ask_doubt":
+            # Button click - just open the chat panel (no agent)
+            return await handle_open_chat(req.user_id, user_state, context)
+        if intent == "chat_message" or intent == "ask_doubt":
+            # Text in chat panel or doubt from main - route through agent
             context["initial_question"] = message
             return await handle_agent_chat(req.user_id, message, user_state, context)
         if intent == "take_quiz":
@@ -395,6 +403,8 @@ async def converse(req: ConversationRequest):
             return await handle_mcq_request(req.user_id, message, user_state, context)
         if intent == "submit_quiz_answer":
             return await handle_quiz_answer(req.user_id, message, context)
+        if intent == "submit_mcq_answer":
+            return await handle_answer(req.user_id, message, context)
         if intent == "show_exercises":
             return await handle_show_exercises(req.user_id, message, user_state, context)
         if intent == "answer_exercise":
@@ -694,8 +704,12 @@ async def chat_panel_message(req: ChatPanelRequest):
     }
     
     try:
+        # Build config with thread_id for checkpointer
+        thread_id = f"chat-{req.user_id}"
+        config = {"configurable": {"thread_id": thread_id}}
+        
         # Run the LangGraph agent
-        final_state = await tutor_agent.ainvoke(initial_state)
+        final_state = await tutor_agent.ainvoke(initial_state, config=config)
         
         # Extract the last AI message
         ai_messages = [m for m in final_state.get("messages", []) if isinstance(m, AIMessage)]
@@ -2232,91 +2246,55 @@ async def handle_agent_chat(user_id: str, message: str, user_state: dict, contex
     )
 
 
-# NOTE: handle_open_chat was removed - routing now uses handle_agent_chat
+async def handle_open_chat(user_id: str, user_state: dict, context: dict) -> ConversationResponse:
+    """Open chat panel alongside existing content (no agent invocation).
+    
+    This just adds the ChatPanel to the current UI - it doesn't run the agent.
+    The agent is only invoked when user actually sends a chat message.
+    """
+    current_id = get_current_section_id(user_state, DEFAULT_SECTION_ID)
+    current_section = get_section_by_id(current_id)
+    
+    # Build existing panels with current section
+    existing_panels = []
+    section_content = None
+    if current_section:
+        section_content = format_content_for_ui(current_section)
+        existing_panels.append(
+            PanelContent(
+                type="ExplanationPanel",
+                props={
+                    "title": current_section["section_title"],
+                    "content": section_content,
+                    "animated": False,
+                    "section_id": current_id
+                },
+                role="primary"
+            )
+        )
+    
+    chat_context = {
+        "current_section_id": current_id,
+        "current_section_title": current_section["section_title"] if current_section else None,
+        "user_id": user_id
+    }
+    
+    # Use chat_panel_schema which adds ChatPanel to existing panels
+    ui = chat_panel_schema(
+        existing_panels=existing_panels,
+        current_context=chat_context,
+        initial_message=None  # No initial message - just open the panel
+    )
+    
+    return ConversationResponse(
+        ui=ui,
+        conversation_context=context
+    )
 
 
 # ==================== Text-to-Speech Endpoint ====================
 
-class TTSRequest(BaseModel):
-    text: str
 
-
-@router.post("/tutor/speak")
-async def text_to_speech(request: TTSRequest):
-    """Convert text to speech using Groq's Orpheus TTS model.
-    
-    Model: canopylabs/orpheus-v1-english (Expressive English TTS)
-    Voices: Kore, Charon, Fenrir, Aoede, Puck, Ballad, Verse
-    Docs: https://console.groq.com/docs/text-to-speech
-    
-    Caching: Audio is cached in Redis for 24h to avoid redundant API calls.
-    """
-    import httpx
-    import hashlib
-    import base64
-    from app.config import settings
-    from app.utils.redis_client import redis_client
-    from fastapi.responses import Response
-    
-    # Generate cache key from text hash
-    text_hash = hashlib.md5(request.text.encode()).hexdigest()
-    cache_key = f"tts:{text_hash}"
-    
-    # Check cache first
-    try:
-        cached = await redis_client.get(cache_key)
-        if cached:
-            # Decode base64 audio from cache
-            audio_bytes = base64.b64decode(cached)
-            return Response(
-                content=audio_bytes,
-                media_type="audio/wav",
-                headers={"Content-Disposition": "inline; filename=speech.wav", "X-Cache": "HIT"}
-            )
-    except Exception as e:
-        print(f"TTS cache read error: {e}")
-    
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://api.groq.com/openai/v1/audio/speech",
-                headers={
-                    "Authorization": f"Bearer {settings.groq_api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "canopylabs/orpheus-v1-english",
-                    "input": request.text,
-                    "voice": "austin",  # Valid voices: autumn, diana, hannah, austin, daniel, troy
-                    "speed": 1.5,  # Faster speed (1.0 is normal)
-                    "response_format": "wav"
-                },
-                timeout=30.0
-            )
-            
-            if response.status_code == 200:
-                audio_content = response.content
-                
-                # Cache the audio (base64 encoded, 24h TTL)
-                try:
-                    await redis_client.set(cache_key, base64.b64encode(audio_content).decode())
-                except Exception as e:
-                    print(f"TTS cache write error: {e}")
-                
-                return Response(
-                    content=audio_content,
-                    media_type="audio/wav",
-                    headers={"Content-Disposition": "inline; filename=speech.wav", "X-Cache": "MISS"}
-                )
-            else:
-                print(f"TTS Error: {response.status_code} - {response.text}")
-                # Return 204 No Content to avoid blocking UI
-                return Response(content=b"", status_code=204)
-                
-    except Exception as e:
-        print(f"TTS Exception: {e}")
-        # Return 204 No Content to avoid blocking UI
-        return Response(content=b"", status_code=204)
 
 
 # === Tutor Navigation & Evaluation Endpoints (moved from tutor.py) ===

@@ -61,9 +61,10 @@ async def classify_intent_with_section(message: str, context: dict = None) -> di
     context = context or {}
     
     # Check context-based intents first (no LLM needed)
-    if context.get("expecting_answer"):
+    # Only shortcut to answer if actually in Answer mode (not Ask mode)
+    if context.get("expecting_answer") and context.get("input_mode") != "ask":
         return {"intent": "answer_question", "target_section_id": None, "target_section_title": None}
-    if context.get("expecting_exercise_answer"):
+    if context.get("expecting_exercise_answer") and context.get("input_mode") != "ask":
         return {"intent": "answer_exercise", "target_section_id": None, "target_section_title": None}
     
     # Try cache first (normalize message for better hit rate)

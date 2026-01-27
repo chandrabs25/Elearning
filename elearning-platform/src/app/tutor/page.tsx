@@ -183,6 +183,18 @@ export default function TutorV2Page() {
         }
     }, [hasChatPanel, chatPanelIndex, focusedPanelIndex]);
 
+    // Auto-focus quiz/mcq panel when it's added (so Answer/Ask toggle appears)
+    useEffect(() => {
+        if (focusedPanelIndex === null && ui?.panels) {
+            const quizIndex = ui.panels.findIndex(
+                p => p.type === "QuizCard" || p.type === "MCQCard"
+            );
+            if (quizIndex >= 0) {
+                setFocusedPanelIndex(quizIndex);
+            }
+        }
+    }, [ui?.panels, focusedPanelIndex]);
+
     // Auto-switch input mode based on focused panel
     // Default to "answer" when quiz/mcq is focused, "ask" otherwise
     useEffect(() => {

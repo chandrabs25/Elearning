@@ -90,27 +90,31 @@ async def get_prerequisite_chain(concept_id: str, depth: int = 3) -> list[dict]:
 async def retrieve_context(state: TutorState) -> TutorState:
     """Retrieve concept content and prerequisites from Neo4j.
     
-    If concept_content is already set (from RAG search), skip retrieval.
+    Always fetches prerequisites to enable Socratic flow.
+    Only skips content retrieval if already provided.
     """
-    # Skip retrieval if content already provided (from RAG search)
-    if state.get("concept_content"):
-        # Initialize mode if not set
-        if not state.get("mode"):
-            state["mode"] = "normal"
-        if state.get("max_depth") is None:
-            state["max_depth"] = 3
-        return state
-    
     concept_id = state.get("current_concept_id") or "7.3"
     
+    # Always fetch prerequisites for Socratic flow
     try:
         data = await get_concept_with_content(concept_id)
-        state["concept_content"] = data["content_text"]
+        
+        # Only update content if not already provided (from RAG)
+        if not state.get("concept_content"):
+            state["concept_content"] = data["content_text"]
+            state["current_concept_title"] = data["section_title"] or f"Section {concept_id}"
+        
+        # Always update prerequisites from Neo4j
         state["prerequisites"] = data["prerequisites"]
-        state["current_concept_title"] = data["section_title"] or f"Section {concept_id}"
+        
+        # Debug: Log what we found
+        prereq_count = len(state["prerequisites"])
+        print(f"[Socratic] Found {prereq_count} prerequisites for {concept_id}: {[p.get('title') for p in state['prerequisites']]}")
+        
     except Exception as e:
         print(f"Error retrieving context: {e}")
-        state["concept_content"] = ""
+        if not state.get("concept_content"):
+            state["concept_content"] = ""
         state["prerequisites"] = []
     
     # Initialize mode if not set
@@ -123,9 +127,8 @@ async def retrieve_context(state: TutorState) -> TutorState:
 
 
 async def understand_question(state: TutorState) -> TutorState:
-    """Analyze user's message - is it a question needing help, or an answer to our prereq question?"""
-    # LLM initialization removed (was unused)
-    # llm = ChatGroq(...)
+    """Analyze user's message using LLM to detect confusion or need for prerequisite help."""
+    from app.config import settings
     
     last_message = state["messages"][-1].content if state["messages"] else ""
     
@@ -134,15 +137,103 @@ async def understand_question(state: TutorState) -> TutorState:
         state["mode"] = "evaluating_answer"
         return state
     
-    # Check for confusion indicators (student needs help)
-    confusion_keywords = ["don't understand", "confused", "what is", "what's", 
-                          "explain", "how does", "why", "unclear", "lost", "help"]
-    needs_help = any(kw in last_message.lower() for kw in confusion_keywords)
+    # If in exercise mode, skip confusion detection
+    if state.get("mode") == "exercise":
+        return state
     
-    if needs_help and state.get("prerequisites") and len(state.get("prerequisite_chain", [])) < state.get("max_depth", 3):
+    # If we are checking if user is familiar with prerequisites
+    if state.get("mode") == "checking_prereq_familiarity":
+        try:
+             # Use LLM to classify response
+            llm = ChatGroq(
+                model="llama-3.3-70b-versatile",
+                temperature=0.1,
+                api_key=settings.groq_api_key
+            )
+            
+            prompt = f"""The tutor asked the student if they are familiar with these prerequisites: {', '.join([p['title'] for p in state.get('prerequisites', [])])}.
+
+Student response: "{last_message}"
+
+Classify the student's response:
+- KNOWS_PREREQS: Student says "yes", "I know them", "I'm familiar", or explains them correctly.
+- NEEDS_EXPLANATION: Student says "no", "explain them", "I don't know", "what are they?".
+- OTHER: Student ignores the question or asks something unrelated.
+
+Respond with ONLY one word: KNOWS_PREREQS, NEEDS_EXPLANATION, or OTHER."""
+
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            classification = response.content.strip().upper()
+            
+            print(f"[Socratic] Prereq familiarity check: {classification}")
+            
+            if "KNOWS_PREREQS" in classification:
+                state["mode"] = "ready_to_continue"
+                return state
+            elif "NEEDS_EXPLANATION" in classification:
+                state["mode"] = "explain_prereqs"
+                return state
+            else:
+                # Fallback to normal flow if response is unrelated
+                state["mode"] = "normal"
+                
+        except Exception as e:
+            print(f"[Socratic] Familiarity check error: {e}")
+            state["mode"] = "normal"
+
+    try:
+        # Use LLM to detect if student is confused or needs help
+        llm = ChatGroq(
+            model="llama-3.3-70b-versatile",
+            temperature=0.1,
+            api_key=settings.groq_api_key
+        )
+        
+        concept_title = state.get("current_concept_title", "the topic")
+        
+        prompt = f"""Analyze this student message in the context of learning about "{concept_title}":
+
+Student message: "{last_message}"
+
+Is the student expressing VALID CONFUSION about the content, or just asking an initial question?
+
+Signs of valid confusion (NEEDS PREREQ HELP):
+- "I don't understand that explanation"
+- "But why is...?" (challenging the explanation)
+- "I'm lost", "This doesn't make sense"
+- "What do you mean by [previous concept]?"
+
+Signs of NORMAL LEARNING (DO NOT TRIGGER PREREQ CHECK):
+- "Can you explain {concept_title}?" (Initial request)
+- "What is gravity?"
+- "Teach me about this."
+- "Give me an example."
+
+Respond with ONLY one word:
+- CONFUSED: if they are struggling with an explanation you already gave.
+- CLEAR: for initial questions, requests for explanation, or simple facts."""
+
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        needs_help = "CONFUSED" in response.content.upper()
+        print(f"[Socratic] Confusion detection (LLM): {needs_help} for '{last_message[:50]}...'")
+            
+    except Exception as e:
+        print(f"[Socratic] Confusion detection error: {e}, falling back to keyword match")
+        # Fallback to keyword detection - be more conservative
+        confusion_keywords = ["don't understand", "im lost", "i'm lost", "confusing", "doesn't make sense"]
+        needs_help = any(kw in last_message.lower() for kw in confusion_keywords)
+    
+    # Route to prereq check if confused and we have prerequisites to check
+    has_prereqs = bool(state.get("prerequisites"))
+    under_depth_limit = len(state.get("prerequisite_chain", [])) < state.get("max_depth", 3)
+    
+    if needs_help and has_prereqs and under_depth_limit:
         state["mode"] = "needs_prereq_check"
+        print(f"[Socratic] Triggering prereq check - has {len(state['prerequisites'])} prerequisites")
     else:
         state["mode"] = "normal"
+        if needs_help and not has_prereqs:
+            print(f"[Socratic] Student confused but no prerequisites available")
     
     return state
 
@@ -358,6 +449,26 @@ After explaining, ask if they now understand better."""
     return state
 
 
+async def get_mastery_suggestion(user_id: str, concept_id: str) -> str:
+    """Check mastery and generate suggestion if threshold met."""
+    from app.graph.user_state import get_section_mastery
+    
+    if not concept_id or not user_id:
+        return ""
+        
+    try:
+        mastery = await get_section_mastery(user_id, concept_id)
+        level = mastery.get("level", 0)
+        
+        if level >= 70:
+            return "\n\n(Tip: Validated mastery level is high. Suggest taking a Quiz or Challenge for this topic!)"
+        elif level >= 30:
+            return "\n\n(Tip: Validated mastery level is moderate. Suggest trying some Practice Exercises!)"
+        return ""
+    except:
+        return ""
+
+
 async def answer_question(state: TutorState) -> TutorState:
     """Generate answer using concept content as context (normal mode)."""
     from app.config import settings
@@ -368,25 +479,52 @@ async def answer_question(state: TutorState) -> TutorState:
         api_key=settings.groq_api_key
     )
     
-    prereq_context = ""
-    if state.get("prerequisite_chain"):
-        prereq_context = f"\n\nNote: You've covered these prerequisites with the student: {', '.join(state['prerequisite_chain'])}"
+    # Get mastery-based suggestion
+    suggestion = await get_mastery_suggestion(
+        state.get("user_id"), 
+        state.get("current_concept_id")
+    )
     
-    system_prompt = f"""You are an AI physics tutor helping a student learn about:
+    # Check if we have prerequisites to list
+    prereqs = state.get("prerequisites", [])
+    prereq_list = ", ".join([p["title"] for p in prereqs]) if prereqs else ""
+    
+    if prereq_list and state.get("mode") != "checking_prereq_familiarity":
+         # If prerequisites exist and we haven't checked familiarity yet
+        system_prompt = f"""You are an AI physics tutor helping a student learn about:
 **{state.get('current_concept_title', 'Gravitation')}**
 
 Textbook content:
 ---
 {state.get('concept_content', '')[:2500]}
 ---
-{prereq_context}
+
+Prerequisites for this topic: {prereq_list}
+
+Guidelines:
+1. Briefly introduce the topic based on the student's question.
+2. Explicitly list the prerequisite concepts ({prereq_list}).
+3. Explain that understanding these is key to mastering the current topic.
+4. Ask the student: "Are you familiar with these concepts and how they relate to {state.get('current_concept_title')}?"
+5. Do NOT explain the prerequisites in detail yet - wait for their answer.
+"""
+        state["mode"] = "checking_prereq_familiarity"
+    else:
+        # Standard answering (no prereqs or already checked)
+        system_prompt = f"""You are an AI physics tutor helping a student learn about:
+**{state.get('current_concept_title', 'Gravitation')}**
+
+Textbook content:
+---
+{state.get('concept_content', '')[:2500]}
+---
 
 Guidelines:
 - Be clear, concise, and educational
 - Use LaTeX for equations ($$...$$)
 - Connect to concepts they already know
 - Be encouraging and supportive
-- End with a follow-up question or suggestion"""
+- End with a follow-up question or suggestion{suggestion}"""
 
     messages_for_llm = [SystemMessage(content=system_prompt)]
     for msg in state.get("messages", [])[-5:]:
@@ -547,8 +685,86 @@ async def respond_to_exercise(state: TutorState) -> TutorState:
     return state
 
 
+async def continue_topic(state: TutorState) -> TutorState:
+    """User knows prerequisites - continue with the main topic."""
+    from app.config import settings
+    
+    llm = ChatGroq(
+        model="llama-3.3-70b-versatile",
+        temperature=0.5,
+        api_key=settings.groq_api_key
+    )
+    
+    # Get mastery-based suggestion
+    suggestion = await get_mastery_suggestion(
+        state.get("user_id"), 
+        state.get("current_concept_id")
+    )
+    
+    system_prompt = f"""You are an AI physics tutor. The student has confirmed they understand the prerequisites for:
+**{state.get('current_concept_title', 'Gravitation')}**
+
+Textbook content:
+---
+{state.get('concept_content', '')[:2000]}
+---
+
+Guidelines:
+1. Briefly acknowledge their knowledge of the prerequisites (e.g. "Great! Since you're familiar with that...")
+2. Now dive deeper into the current topic, building upon those prerequisites.
+3. Explain the core concepts clearly using the textbook content.
+4. Use LaTeX for equations ($$...$$).
+5. Suggest next steps based on their progress.{suggestion}
+"""
+    
+    messages_for_llm = [SystemMessage(content=system_prompt)]
+    # Retrieve recent context but skip the system prompt setup from before
+    for msg in state.get("messages", [])[-3:]:
+        if isinstance(msg, (HumanMessage, AIMessage)):
+            messages_for_llm.append(msg)
+            
+    response = await llm.ainvoke(messages_for_llm)
+    
+    state["mode"] = "normal"
+    state["messages"] = state.get("messages", []) + [AIMessage(content=response.content)]
+    return state
+
+
+async def explain_prereqs(state: TutorState) -> TutorState:
+    """User doesn't know prerequisites - explain them."""
+    from app.config import settings
+    
+    llm = ChatGroq(
+        model="llama-3.3-70b-versatile",
+        temperature=0.5,
+        api_key=settings.groq_api_key
+    )
+    
+    prereqs = state.get("prerequisites", [])
+    prereq_titles = ", ".join([p["title"] for p in prereqs])
+    
+    system_prompt = f"""You are an AI physics tutor. The student needs help understanding prerequisites for **{state.get('current_concept_title')}**.
+
+Prerequisites to explain: {prereq_titles}
+
+Guidelines:
+1. Explain these prerequisite concepts clearly and simply.
+2. Use analogies if helpful.
+3. Relate them back to why they feature in {state.get('current_concept_title')}.
+4. After explaining, ask: "Does that make sense? Are you ready to continue with {state.get('current_concept_title')}?"
+"""
+
+    response = await llm.ainvoke([HumanMessage(content=system_prompt)])
+    
+    # After explaining, we set mode to check familiarity again (or just normal to let them respond)
+    # Let's set to normal but with context that we just explained
+    state["mode"] = "checking_prereq_familiarity" 
+    state["messages"] = state.get("messages", []) + [AIMessage(content=response.content)]
+    return state
+
+
 # === Routing Logic ===
-def route_after_understand(state: TutorState) -> Literal["ask_prereq_question", "evaluate_prereq_answer", "evaluate_exercise", "answer"]:
+def route_after_understand(state: TutorState) -> Literal["ask_prereq_question", "evaluate_prereq_answer", "evaluate_exercise", "answer", "continue_topic", "explain_prereqs"]:
     """Route based on current mode."""
     mode = state.get("mode", "normal")
     
@@ -558,6 +774,10 @@ def route_after_understand(state: TutorState) -> Literal["ask_prereq_question", 
         return "evaluate_prereq_answer"
     elif mode == "exercise":
         return "evaluate_exercise"
+    elif mode == "ready_to_continue":
+        return "continue_topic"
+    elif mode == "explain_prereqs":
+        return "explain_prereqs"
     else:
         return "answer"
 
@@ -586,6 +806,10 @@ def build_tutor_graph() -> StateGraph:
     graph.add_node("evaluate_exercise", evaluate_exercise)
     graph.add_node("respond_to_exercise", respond_to_exercise)
     
+    # New nodes for redesigned flow
+    graph.add_node("continue_topic", continue_topic)
+    graph.add_node("explain_prereqs", explain_prereqs)
+    
     # Set entry point
     graph.set_entry_point("retrieve")
     
@@ -600,7 +824,9 @@ def build_tutor_graph() -> StateGraph:
             "ask_prereq_question": "ask_prereq_question",
             "evaluate_prereq_answer": "evaluate_prereq_answer",
             "evaluate_exercise": "evaluate_exercise",
-            "answer": "answer"
+            "answer": "answer",
+            "continue_topic": "continue_topic",
+            "explain_prereqs": "explain_prereqs"
         }
     )
     
@@ -634,7 +860,12 @@ def build_tutor_graph() -> StateGraph:
     graph.add_edge("evaluate_exercise", "respond_to_exercise")
     graph.add_edge("respond_to_exercise", END)
     
+    # Normal answer flow
     graph.add_edge("answer", END)
+    graph.add_edge("continue_topic", END)
+    
+    # Explanation flow - waits for user feedback
+    graph.add_edge("explain_prereqs", END)
     
     return graph.compile(checkpointer=memory)
 

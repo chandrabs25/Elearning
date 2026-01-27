@@ -1,36 +1,109 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AI Tutor Platform
 
-## Getting Started
+An intelligent, interactive learning platform for NCERT Physics (Class 11 - Gravitation), powered by LLMs and a dynamic, component-based UI.
 
-First, run the development server:
+---
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## High-Level System Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              FRONTEND                                   │
+│                         (Next.js / Vercel)                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────────────────┐  │
+│  │  TutorPage   │───►│ DynamicPanel │───►│ Component Registry       │  │
+│  │  (Orchestr.) │    │  (Renderer)  │    │ (WelcomeCard, QuizCard,  │  │
+│  └──────────────┘    └──────────────┘    │  ExplanationPanel, etc.) │  │
+│         │                                 └──────────────────────────┘  │
+│         │ SSE / REST                                                    │
+└─────────┼───────────────────────────────────────────────────────────────┘
+          ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              BACKEND                                    │
+│                          (FastAPI / Fly.io)                             │
+├─────────────────────────────────────────────────────────────────────────┤
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │                    /api/tutor/converse                             │ │
+│  │  ┌──────────────┐    ┌──────────────┐    ┌────────────────────┐   │ │
+│  │  │ Intent       │───►│ Handler      │───►│ UI Schema          │   │ │
+│  │  │ Classifier   │    │ Router       │    │ Generator          │   │ │
+│  │  │ (LLM/Cache)  │    │ (Determin.)  │    │ (Pydantic Models)  │   │ │
+│  │  └──────────────┘    └──────────────┘    └────────────────────┘   │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│         │                      │                                        │
+│         ▼                      ▼                                        │
+│  ┌──────────────┐    ┌──────────────────────────────────────────────┐  │
+│  │ TutorAgent   │    │                DATA LAYER                    │  │
+│  │ (LangGraph)  │    │  ┌────────────┐  ┌────────────┐  ┌────────┐ │  │
+│  │              │    │  │ Neo4j      │  │ Redis      │  │ JSON   │ │  │
+│  │ - Socratic   │    │  │ (Users,    │  │ (Cache,    │  │ (NCERT │ │  │
+│  │   Flow       │    │  │  Concepts, │  │  Sessions, │  │  Text) │ │  │
+│  │ - Exercise   │    │  │  Progress) │  │  TTS)      │  │        │ │  │
+│  │   Evaluation │    │  └────────────┘  └────────────┘  └────────┘ │  │
+│  └──────────────┘    └──────────────────────────────────────────────┘  │
+│         │                                                               │
+│         ▼                                                               │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │                        LLM PROVIDERS                              │  │
+│  │              Groq (Llama 3.3 70B + Orpheus TTS)                   │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+---
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Core Components
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### Frontend (`elearning-platform/`)
+- **Framework**: Next.js 14 (App Router)
+- **Styling**: Tailwind CSS
+- **Animations**: Framer Motion
+- **Deployment**: Vercel
 
-## Learn More
+| Component | Purpose |
+|-----------|---------|
+| `TutorPage` | Main orchestrator - handles API calls, state, animations |
+| `DynamicPanel` | Renders any panel type from backend UISchema |
+| `ExplanationPanel` | Displays NCERT content with LaTeX rendering |
+| `NavigationMap` | Chapter navigation with mastery indicators |
+| `QuizCard` / `MCQCard` | Interactive assessment components |
+| `ChatPanel` | Contextual Q&A with the AI tutor |
 
-To learn more about Next.js, take a look at the following resources:
+### Backend (`elearning-backend/`)
+- **Framework**: FastAPI
+- **Agent**: LangGraph (stateful Socratic tutor)
+- **LLM**: Groq (Llama 3.3 70B)
+- **Deployment**: Fly.io
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| Module | Purpose |
+|--------|---------|
+| `converse.py` | Main API router - intent classification, UI generation |
+| `tutor_agent.py` | LangGraph agent for Socratic teaching & exercise evaluation |
+| `ui_generator.py` | Pydantic models for dynamic UI schemas |
+| `user_state.py` | Neo4j user progress tracking |
+| `redis_client.py` | Caching layer (intents, TTS, sessions) |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+---
 
-## Deploy on Vercel
+## Data Flow
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+1. **User Input** → Frontend sends message/action to `/api/tutor/converse`
+2. **Intent Classification** → Deterministic (button) or LLM-based (free text)
+3. **Handler Execution** → Appropriate handler fetches content, runs agent, etc.
+4. **UI Schema Generation** → Returns `UISchema` with layout + panels
+5. **Frontend Rendering** → `DynamicPanel` renders the response
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+---
+
+## Key Features
+
+- **Dynamic UI**: Server-driven UI composition - backend controls layout
+- **Socratic Teaching**: Agent probes prerequisite understanding before explaining
+- **Streaming**: SSE-based content streaming with skeleton loaders
+- **Caching**: Redis caching for intents, user state, and TTS audio
+- **Voice**: Text-to-speech via Groq Orpheus model
+
+---
+
+ 
