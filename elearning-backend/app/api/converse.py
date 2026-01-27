@@ -2248,10 +2248,33 @@ async def text_to_speech(request: TTSRequest):
     Model: canopylabs/orpheus-v1-english (Expressive English TTS)
     Voices: Kore, Charon, Fenrir, Aoede, Puck, Ballad, Verse
     Docs: https://console.groq.com/docs/text-to-speech
+    
+    Caching: Audio is cached in Redis for 24h to avoid redundant API calls.
     """
     import httpx
+    import hashlib
+    import base64
     from app.config import settings
+    from app.utils.redis_client import redis_client
     from fastapi.responses import Response
+    
+    # Generate cache key from text hash
+    text_hash = hashlib.md5(request.text.encode()).hexdigest()
+    cache_key = f"tts:{text_hash}"
+    
+    # Check cache first
+    try:
+        cached = await redis_client.get(cache_key)
+        if cached:
+            # Decode base64 audio from cache
+            audio_bytes = base64.b64decode(cached)
+            return Response(
+                content=audio_bytes,
+                media_type="audio/wav",
+                headers={"Content-Disposition": "inline; filename=speech.wav", "X-Cache": "HIT"}
+            )
+    except Exception as e:
+        print(f"TTS cache read error: {e}")
     
     try:
         async with httpx.AsyncClient() as client:
@@ -2272,10 +2295,18 @@ async def text_to_speech(request: TTSRequest):
             )
             
             if response.status_code == 200:
+                audio_content = response.content
+                
+                # Cache the audio (base64 encoded, 24h TTL)
+                try:
+                    await redis_client.set(cache_key, base64.b64encode(audio_content).decode())
+                except Exception as e:
+                    print(f"TTS cache write error: {e}")
+                
                 return Response(
-                    content=response.content,
+                    content=audio_content,
                     media_type="audio/wav",
-                    headers={"Content-Disposition": "inline; filename=speech.wav"}
+                    headers={"Content-Disposition": "inline; filename=speech.wav", "X-Cache": "MISS"}
                 )
             else:
                 print(f"TTS Error: {response.status_code} - {response.text}")

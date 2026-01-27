@@ -8,7 +8,7 @@ async def get_or_create_user(user_id: str) -> dict:
     """Get user or create new one."""
     query = """
     MERGE (u:User {id: $user_id})
-    ON CREATE SET u.created_at = datetime(), u.session_count = 0, u.lifetime_mastery = 0
+    ON CREATE SET u.created_at = datetime(), u.session_count = 0, u.lifetime_mastery = 0, u.exploration_points = 0
     ON MATCH SET u.last_active = datetime()
     RETURN u
     """
