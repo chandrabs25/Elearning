@@ -19,6 +19,11 @@ from app.graph.user_state import (
     get_completed_exercises,
     record_chat_interaction
 )
+from app.graph.chat_history import (
+    save_chat_message,
+    get_chat_history,
+    clear_chat_history
+)
 from app.chains.extractors import extract_topic_from_add_request, extract_component_to_remove, is_open_book_request, extract_highlight_terms
 from app.chains.content import (
     get_section_by_id,
@@ -89,6 +94,10 @@ def extract_mcq_option(answer: str) -> str:
     return answer
 
 
+from langsmith import traceable
+
+
+@traceable(name="evaluate_mcq_answer")
 async def evaluate_mcq_answer(
     question: str,
     options: list[str],
@@ -318,15 +327,28 @@ async def converse(req: ConversationRequest):
     # Check if user has a current section
     has_current_section = bool(user_state and user_state.get("current_concept"))
     
-    if req.action and context.get("expecting_answer") and context.get("question_type") == "mcq":
-        # MCQ option click while expecting answer - treat action as the answer
-        intent = "submit_mcq_answer"
-        message = req.action  # The option text (e.g., "Option A")
-    elif req.action:
-        # Button clicks - direct lookup, NO intent classification needed
+    # Helper to check if action looks like an MCQ option
+    def is_mcq_option(action: str) -> bool:
+        action_lower = action.lower().strip()
+        # Match patterns like "Option A", "A", "1", etc.
+        if action_lower.startswith("option "):
+            return True
+        if len(action_lower) == 1 and action_lower in "abcd1234":
+            return True
+        # Match the actual option text from MCQ (stored in context)
+        options = context.get("options", [])
+        return action in options
+    
+    if req.action:
+        # First, check if this is a KNOWN deterministic action (navigation, quiz, etc.)
         intent, action_payload = parse_action(req.action)
         if intent:
+            # Deterministic action found - use it regardless of quiz state
             message = action_payload if action_payload else req.action
+        elif context.get("expecting_answer") and context.get("question_type") == "mcq" and is_mcq_option(req.action):
+            # MCQ option click while expecting answer - treat as MCQ answer
+            intent = "submit_mcq_answer"
+            message = req.action
         else:
             # Unknown action - log warning and return error
             print(f"Warning: Unknown action '{req.action}' - not in ACTION_TO_INTENT")
@@ -477,13 +499,15 @@ async def converse_stream(req: ConversationRequest):
             # 4. Process the actual request (reuse existing logic)
             # Create a fake request to call the main handler
             full_response = await converse(req)
-            ui_dict = full_response.ui.model_dump()
+            # Use mode='json' to ensure datetimes are serialized to strings
+            ui_dict = full_response.ui.model_dump(mode='json')
             
             # 5. Stream content for each panel
             for panel_idx, panel in enumerate(ui_dict.get("panels", [])):
                 props = panel.get("props", {})
                 content = props.get("content", [])
                 
+                # Handle LIST content (e.g. ExplanationPanel)
                 if content and isinstance(content, list):
                     # Stream content items one by one
                     for chunk_idx, item in enumerate(content):
@@ -495,9 +519,17 @@ async def converse_stream(req: ConversationRequest):
                         }
                         yield f"data: {json.dumps(chunk_event)}\n\n"
                         await asyncio.sleep(0.03)  # Smooth animation
-            
+                
+                # Handle STRING content (e.g. ChatPanel) - optional streaming
+                elif content and isinstance(content, str):
+                    # For now just send the full string as one chunk? 
+                    # Real streaming would require chunk_text helper
+                    pass 
+
             # 6. Send complete signal with final UI
-            yield f"data: {json.dumps({'type': 'complete', 'ui': ui_dict, 'context': full_response.conversation_context})}\n\n"
+            # Ensure context is also serializable (though mode='json' doesn't help dicts, Pydantic v2 handles it if mapped)
+            # But context is a raw dict. Best is to rely on Pydantic or use default=str
+            yield f"data: {json.dumps({'type': 'complete', 'ui': ui_dict, 'context': full_response.conversation_context}, default=str)}\n\n"
             
         except Exception as e:
             # Send error event
@@ -735,6 +767,23 @@ async def chat_panel_message(req: ChatPanelRequest):
                     "Quiz me on this topic"
                 ]
         
+        # Save messages to history (persist conversation)
+        if section_id:
+            # Save user message
+            await save_chat_message(
+                user_id=req.user_id,
+                section_id=section_id,
+                role="user",
+                content=req.message
+            )
+            # Save assistant message
+            await save_chat_message(
+                user_id=req.user_id,
+                section_id=section_id,
+                role="assistant",
+                content=content_items
+            )
+        
         return ChatPanelResponse(
             message=ChatMessage(
                 role="assistant",
@@ -755,6 +804,51 @@ async def chat_panel_message(req: ChatPanelRequest):
             suggestions=["Try asking differently", "Explain the concept", "Show an example"],
             mastery_update=mastery_result
         )
+
+
+class ChatHistoryResponse(BaseModel):
+    """Response model for chat history endpoint."""
+    messages: list[dict]
+    section_id: str
+    count: int
+
+
+@router.get("/tutor/chat/history/{user_id}/{section_id}", response_model=ChatHistoryResponse)
+async def get_section_chat_history(user_id: str, section_id: str, limit: int = 20):
+    """
+    Get chat history for a specific user and section.
+    
+    Args:
+        user_id: The user's ID
+        section_id: The section/concept ID (e.g., "7.2")
+        limit: Maximum number of messages to return (default 20)
+    
+    Returns:
+        List of chat messages for the section
+    """
+    messages = await get_chat_history(user_id, section_id, limit)
+    
+    return ChatHistoryResponse(
+        messages=messages,
+        section_id=section_id,
+        count=len(messages)
+    )
+
+
+@router.delete("/tutor/chat/history/{user_id}/{section_id}")
+async def delete_section_chat_history(user_id: str, section_id: str):
+    """
+    Clear chat history for a specific user and section.
+    
+    Args:
+        user_id: The user's ID
+        section_id: The section/concept ID
+    
+    Returns:
+        Success status
+    """
+    await clear_chat_history(user_id, section_id)
+    return {"success": True, "message": f"Chat history cleared for section {section_id}"}
 
 
 def parse_response_to_content(text: str) -> list:
@@ -864,7 +958,17 @@ async def handle_start_topic(user_id: str, message: str, context: dict) -> Conve
             await update_current_concept(user_id, section_id)
             return await _build_explanation_response(user_id, section, context)
     
-    # 2. Fallback: Try to find the topic in content (for legacy/direct calls)
+    # 2. Check if message contains a direct section ID (e.g., "7.2", "teach me 7.2")
+    #    This MUST come before fuzzy search to handle NavigationMap/ProgressBar clicks
+    words = message.split()
+    for word in words:
+        if word.startswith("7."):
+            section = get_section_by_id(word)
+            if section:
+                await update_current_concept(user_id, word)
+                return await _build_explanation_response(user_id, section, context)
+    
+    # 3. Fallback: Try fuzzy search for topic name (for natural language requests)
     matches = search_sections_by_topic(message)
     
     if matches:
@@ -874,15 +978,6 @@ async def handle_start_topic(user_id: str, message: str, context: dict) -> Conve
         if section:
             await update_current_concept(user_id, section_id)
             return await _build_explanation_response(user_id, section, context)
-    
-    # Check if message contains a section ID directly
-    words = message.split()
-    for word in words:
-        if word.startswith("7."):
-            section = get_section_by_id(word)
-            if section:
-                await update_current_concept(user_id, word)
-                return await _build_explanation_response(user_id, section, context)
     
     # Fallback: show table of contents
     toc = get_table_of_contents()
@@ -900,6 +995,7 @@ async def handle_start_topic(user_id: str, message: str, context: dict) -> Conve
         ),
         conversation_context={"last_search": message}
     )
+
 
 
 async def handle_navigate(user_id: str, message: str, user_state: dict, context: dict) -> ConversationResponse:
@@ -1098,6 +1194,8 @@ async def handle_answer(user_id: str, answer: str, context: dict) -> Conversatio
             ui=ui,
             conversation_context={
                 "answered": True,
+                "expecting_answer": False,  # Clear so buttons work normally
+                "question_type": None,      # Clear quiz state
                 "new_mastery": result["new_level"],
                 "section_completed": result["completed"]
             }
@@ -1163,7 +1261,8 @@ async def handle_answer(user_id: str, answer: str, context: dict) -> Conversatio
 
 async def handle_quiz_request(user_id: str, message: str, user_state: dict, context: dict) -> ConversationResponse:
     """Handle 'take quiz' intent - fetch an example problem or fallback to MCQ."""
-    current_id = get_current_section_id(user_state, DEFAULT_SECTION_ID)
+    # Prioritize section from context (frontend state), fallback to user_state (DB)
+    current_id = context.get("current_section") or get_current_section_id(user_state, DEFAULT_SECTION_ID)
     
     exercises = get_exercises_for_section(current_id)
     
@@ -1309,19 +1408,22 @@ async def handle_quiz_answer(user_id: str, answer: str, context: dict) -> Conver
         conversation_context={
             **context,
             "evaluated": True,
+            "expecting_answer": False,  # Clear so buttons work normally
+            "question_type": None,      # Clear quiz state
             "new_mastery": result["new_level"],
             "section_completed": result["completed"]
         }
     )
 
-
+@traceable(name="handle_mcq_request")
 async def handle_mcq_request(user_id: str, message: str, user_state: dict, context: dict) -> ConversationResponse:
     """Handle 'generate mcq' intent using LLM."""
     from groq import AsyncGroq
     from app.config import settings
     import json
     
-    current_id = get_current_section_id(user_state, DEFAULT_SECTION_ID)
+    # Prioritize section from context (frontend state), fallback to user_state (DB)
+    current_id = context.get("current_section") or get_current_section_id(user_state, DEFAULT_SECTION_ID)
     section = get_section_by_id(current_id)
     
     title = section["section_title"] if section else "Gravitation"

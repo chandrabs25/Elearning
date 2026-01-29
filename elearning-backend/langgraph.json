@@ -1,0 +1,10 @@
+{
+    "$schema": "https://langchain-ai.github.io/langgraph/langgraph.json",
+    "dependencies": [
+        "."
+    ],
+    "graphs": {
+        "tutor_agent": "./app/agents/tutor_agent.py:tutor_agent"
+    },
+    "env": ".env"
+}

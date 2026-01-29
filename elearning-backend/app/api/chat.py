@@ -1,11 +1,13 @@
 from fastapi import APIRouter
 from groq import AsyncGroq
+from langsmith import traceable
 from app.schemas.base import ChatRequest, ChatResponse
 from app.config import settings
 
 router = APIRouter()
 
 @router.post("/chat", response_model=ChatResponse)
+@traceable(name="chat_endpoint")
 async def chat_endpoint(request: ChatRequest):
     """Bare minimum chat endpoint."""
     

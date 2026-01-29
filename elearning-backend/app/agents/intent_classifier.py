@@ -68,8 +68,10 @@ async def classify_intent_with_section(message: str, context: dict = None) -> di
         return {"intent": "answer_exercise", "target_section_id": None, "target_section_title": None}
     
     # Try cache first (normalize message for better hit rate)
+    # Include input_mode in cache key so Ask vs Answer modes don't conflict
     normalized_msg = message.lower().strip()
-    cache_key = f"intent:{hashlib.md5(normalized_msg.encode()).hexdigest()}"
+    input_mode = context.get("input_mode", "default")
+    cache_key = f"intent:{input_mode}:{hashlib.md5(normalized_msg.encode()).hexdigest()}"
     cached = await cache_get(cache_key)
     if cached:
         return cached

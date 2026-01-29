@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     # CORS
     frontend_url: str = "http://localhost:3000"
     
+    # LangSmith (optional - for LLM tracing)
+    langsmith_api_key: str | None = None
+    langchain_project: str = "elearning-tutor"
+    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

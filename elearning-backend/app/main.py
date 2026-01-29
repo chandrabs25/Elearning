@@ -4,15 +4,21 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.graph.client import neo4j_client
+
+# Initialize LangSmith tracing IMMEDIATELY (before importing agents)
+from app.langsmith_config import init_langsmith
+init_langsmith()
+
 from app.api import chat
 from app.api import converse
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-
+    # Startup logic
     yield
 
+    # Shutdown logic
     await neo4j_client.close()
 
 app = FastAPI(title="E-Learning Backend", lifespan=lifespan)

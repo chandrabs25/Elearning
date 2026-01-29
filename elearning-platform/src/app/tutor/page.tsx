@@ -138,6 +138,14 @@ export default function TutorV2Page() {
         initSession();
     }, []);
 
+    // Load chat history when section changes
+    useEffect(() => {
+        const sectionId = context.current_section as string;
+        if (sectionId) {
+            fetchChatHistory(sectionId);
+        }
+    }, [context.current_section]);
+
     // Determine if a ChatPanel exists and which panel is focused
     const chatPanelIndex = ui?.panels.findIndex(p => p.type === "ChatPanel") ?? -1;
     const hasChatPanel = chatPanelIndex >= 0;
@@ -255,6 +263,26 @@ export default function TutorV2Page() {
         }
     };
 
+    // Fetch chat history for a section
+    const fetchChatHistory = async (sectionId: string) => {
+        try {
+            const res = await fetch(`${BACKEND_URL}/api/tutor/chat/history/${USER_ID}/${sectionId}`);
+            if (res.ok) {
+                const data = await res.json();
+                // Convert stored messages to ChatMessage format
+                const messages: ChatMessage[] = data.messages.map((msg: { role: string; content: string | object[] }) => ({
+                    role: msg.role as "user" | "assistant",
+                    content: typeof msg.content === "string"
+                        ? [{ type: "text", text: msg.content }]
+                        : msg.content
+                }));
+                setChatMessages(messages);
+            }
+        } catch (err) {
+            console.error("Failed to fetch chat history:", err);
+        }
+    };
+
     // Get voice feedback message based on command
     const getVoiceFeedback = (message: string, responseData: any): string => {
         const msg = message.toLowerCase();
@@ -317,6 +345,10 @@ export default function TutorV2Page() {
 
             // Build request body - use action for button clicks, message for free-form text
             const requestContext = { ...context, focused_panel, input_mode: inputMode };
+
+            // DEBUG: Log the payload to verify input_mode
+            console.log("Sending tutor message:", { message, inputMode, requestContext });
+
             const body = isAction
                 ? { user_id: USER_ID, action: message, context: requestContext }
                 : { user_id: USER_ID, message, context: requestContext };
@@ -428,7 +460,7 @@ export default function TutorV2Page() {
         } finally {
             setIsProcessing(false);
         }
-    }, [context, isProcessing, hasChatPanel, speak, ui]);
+    }, [context, isProcessing, hasChatPanel, speak, ui, inputMode, focusedPanelIndex]);
 
     // Send message to chat endpoint
     const sendChatMessage = useCallback(async (message: string) => {

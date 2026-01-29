@@ -52,12 +52,30 @@ async def cache_get(key: str) -> Any | None:
         return None
 
 
-from datetime import datetime
+from datetime import datetime, date, time
 
 class DateTimeEncoder(json.JSONEncoder):
+    """JSON encoder that handles datetime objects including Neo4j types."""
     def default(self, obj):
+        # Handle Python datetime types
         if isinstance(obj, datetime):
             return obj.isoformat()
+        if isinstance(obj, date):
+            return obj.isoformat()
+        if isinstance(obj, time):
+            return obj.isoformat()
+        
+        # Handle Neo4j temporal types (they have to_native() method)
+        if hasattr(obj, 'to_native'):
+            native = obj.to_native()
+            if hasattr(native, 'isoformat'):
+                return native.isoformat()
+            return str(native)
+        
+        # Handle Neo4j Duration (has months, days, seconds, nanoseconds)
+        if hasattr(obj, 'months') and hasattr(obj, 'days') and hasattr(obj, 'seconds'):
+            return f"P{obj.months}M{obj.days}DT{obj.seconds}S"
+        
         return super().default(obj)
 
 
