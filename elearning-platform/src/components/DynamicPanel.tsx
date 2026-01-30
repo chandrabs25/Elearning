@@ -221,8 +221,14 @@ export default function DynamicPanel({
 
     // Special handling for ChatPanel - pass controlled props
     if (panel.type === "ChatPanel") {
+        // Ensure user_id is in the context for section status queries
+        const chatContext = {
+            ...(panel.props.context as Record<string, unknown> || {}),
+            user_id: "demo-user"  // Match the USER_ID from tutor/page.tsx
+        };
         componentProps = {
             ...componentProps,
+            context: chatContext,
             messages: chatMessages || [],
             isTyping: isChatTyping || false,
             suggestions: chatSuggestions || [],

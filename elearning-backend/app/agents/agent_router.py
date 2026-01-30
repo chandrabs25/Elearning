@@ -35,6 +35,10 @@ async def invoke_tutor_agent(
         "current_concept_title": context.get("section_title"),
         "concept_content": context.get("section_content"),  # Pre-loaded content if available
         "prerequisites": [],
+        "insights": [],  # Will be populated by retrieve_context
+        "active_misconceptions": [],  # Will be populated by analyze_student_context
+        "active_competencies": [],
+        "risk_concepts": [],
         "mode": context.get("agent_mode", "normal"),
         "current_prereq_id": context.get("current_prereq_id"),
         "current_prereq_title": context.get("current_prereq_title"),
@@ -42,11 +46,8 @@ async def invoke_tutor_agent(
         "prerequisite_chain": context.get("prerequisite_chain", []),
         "prereq_answer_correct": False,
         "max_depth": 3,
-        "exercise_label": context.get("exercise_label"),
-        "exercise_question": context.get("exercise_question"),
-        "exercise_solution": context.get("exercise_solution"),
-        "exercise_student_answer": None,
-        "exercise_evaluation": None
+        "main_concept_id": None,  # Preserved when going deeper into prereqs
+        "main_concept_title": None
     }
     
     # Invoke agent with persistence

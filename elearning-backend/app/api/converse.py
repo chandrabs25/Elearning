@@ -17,7 +17,9 @@ from app.graph.user_state import (
     get_lifetime_progress,
     record_exercise_attempt,
     get_completed_exercises,
-    record_chat_interaction
+    record_chat_interaction,
+    get_section_learning_status,
+    mark_concept_verified
 )
 from app.graph.chat_history import (
     save_chat_message,
@@ -730,9 +732,19 @@ async def chat_panel_message(req: ChatPanelRequest):
         "current_concept_title": section_title,
         "concept_content": rag_content,  # Pre-populated from RAG if available
         "prerequisites": [],
-        "needs_prerequisite": False,
+        "insights": [],  # Will be populated by retrieve_context
+        "active_misconceptions": [],  # Will be populated by analyze_student_context
+        "active_competencies": [],
+        "risk_concepts": [],
+        "mode": "normal",
+        "current_prereq_id": None,
+        "current_prereq_title": None,
+        "prereq_question": None,
         "prerequisite_chain": [],
-        "confusion_detected": False
+        "prereq_answer_correct": False,
+        "max_depth": 3,
+        "main_concept_id": None,  # Preserved when going deeper into prereqs
+        "main_concept_title": None
     }
     
     try:
@@ -2509,8 +2521,8 @@ class ExerciseEvaluationResponse(BaseModel):
 
 @router.post("/tutor/evaluate-exercise", response_model=ExerciseEvaluationResponse)
 async def evaluate_exercise(request: ExerciseEvaluationRequest):
-    """Evaluate student answer against exercise solution using LangGraph agent."""
-    from app.agents.tutor_agent import evaluate_exercise_with_agent
+    """Evaluate student answer against exercise solution using LLM."""
+    from app.agents.tutor_agent import evaluate_quiz_answer
     from app.chains.content import get_exercise_with_solution
     
     exercise = get_exercise_with_solution(request.exercise_label)
@@ -2520,11 +2532,20 @@ async def evaluate_exercise(request: ExerciseEvaluationRequest):
     if not exercise.get("solution"):
         raise HTTPException(status_code=404, detail=f"Solution not available for exercise {request.exercise_label}")
     
-    result = await evaluate_exercise_with_agent(
-        user_id=request.user_id,
-        exercise_label=request.exercise_label,
+    # Use the evaluate_quiz_answer helper (evaluate_exercise_with_agent was removed)
+    eval_result = await evaluate_quiz_answer(
+        question=exercise.get("question", request.exercise_label),
+        solution=exercise.get("solution", ""),
         student_answer=request.student_answer
     )
+    
+    # Map result to expected format
+    result = {
+        "is_correct": eval_result.get("is_correct", False),
+        "score": 100 if eval_result.get("is_correct") else (50 if eval_result.get("is_partial") else 0),
+        "feedback": eval_result.get("feedback", ""),
+        "comparison": f"Your answer was {'correct' if eval_result.get('is_correct') else 'partially correct' if eval_result.get('is_partial') else 'incorrect'}."
+    }
     
     try:
         mastery_result = await record_exercise_attempt(
@@ -2551,3 +2572,168 @@ async def evaluate_exercise(request: ExerciseEvaluationRequest):
         new_mastery=new_mastery
     )
 
+
+# === Understanding Check Endpoints ===
+
+class SectionStatusResponse(BaseModel):
+    section_id: str
+    concepts: list[dict]  # [{id, title, explained, verified}]
+    all_explained: bool
+    all_verified: bool
+    explained_count: int
+    verified_count: int
+    total_count: int
+
+
+@router.get("/tutor/section-status/{section_id}")
+async def get_section_status(section_id: str, user_id: str) -> SectionStatusResponse:
+    """Get the learning status for all concepts in a section."""
+    status = await get_section_learning_status(user_id, section_id)
+    return SectionStatusResponse(**status)
+
+
+class CheckUnderstandingRequest(BaseModel):
+    user_id: str
+    section_id: str
+
+
+class CheckUnderstandingResponse(BaseModel):
+    concepts_to_verify: list[dict]  # Concepts that are explained but not verified
+    first_question: str | None
+    first_concept_id: str | None
+    all_verified: bool
+
+
+@router.post("/tutor/check-understanding")
+async def start_understanding_check(request: CheckUnderstandingRequest) -> CheckUnderstandingResponse:
+    """Start the understanding check flow for a section."""
+    from app.agents.tutor_agent import evaluate_quiz_answer
+    from app.config import settings
+    from langchain_groq import ChatGroq
+    from langchain_core.messages import HumanMessage
+    
+    status = await get_section_learning_status(request.user_id, request.section_id)
+    
+    # Find concepts that are explained but not verified
+    to_verify = [c for c in status["concepts"] if c["explained"] and not c["verified"]]
+    
+    if not to_verify:
+        return CheckUnderstandingResponse(
+            concepts_to_verify=[],
+            first_question=None,
+            first_concept_id=None,
+            all_verified=status["all_verified"]
+        )
+    
+    # Generate question for first unverified concept
+    first_concept = to_verify[0]
+    
+    llm = ChatGroq(
+        model="llama-3.3-70b-versatile",
+        temperature=0.5,
+        api_key=settings.groq_api_key
+    )
+    
+    prompt = f"""Generate a simple question to check if a student understands the concept: "{first_concept['title']}" (ID: {first_concept['id']}).
+
+The question should:
+1. Be answerable in 2-3 sentences
+2. Test conceptual understanding, not memorization
+3. Be friendly and encouraging
+
+Respond with ONLY the question, nothing else."""
+
+    response = await llm.ainvoke([HumanMessage(content=prompt)])
+    
+    return CheckUnderstandingResponse(
+        concepts_to_verify=to_verify,
+        first_question=response.content,
+        first_concept_id=first_concept["id"],
+        all_verified=False
+    )
+
+
+class VerifyUnderstandingRequest(BaseModel):
+    user_id: str
+    concept_id: str
+    answer: str
+
+
+class VerifyUnderstandingResponse(BaseModel):
+    is_correct: bool
+    feedback: str
+    next_concept: dict | None  # Next concept to verify, if any
+    next_question: str | None
+    all_verified: bool
+    section_id: str
+
+
+@router.post("/tutor/verify-understanding")
+async def verify_understanding(request: VerifyUnderstandingRequest) -> VerifyUnderstandingResponse:
+    """Verify the student's understanding of a concept."""
+    from app.config import settings
+    from langchain_groq import ChatGroq
+    from langchain_core.messages import HumanMessage
+    from app.chains.content import get_section_by_id
+    
+    # Get concept details
+    concept = get_section_by_id(request.concept_id)
+    concept_title = concept.get("section_title", request.concept_id) if concept else request.concept_id
+    
+    llm = ChatGroq(
+        model="llama-3.3-70b-versatile",
+        temperature=0.3,
+        api_key=settings.groq_api_key
+    )
+    
+    # Evaluate the answer
+    eval_prompt = f"""You are evaluating a student's understanding of "{concept_title}".
+
+Student's explanation: "{request.answer}"
+
+Evaluate if the student demonstrates adequate understanding of this concept.
+- They don't need perfect accuracy, just show they grasp the core idea.
+- Be encouraging and constructive.
+
+Respond in this format:
+VERDICT: [PASS or FAIL]
+FEEDBACK: [Your constructive feedback]"""
+
+    response = await llm.ainvoke([HumanMessage(content=eval_prompt)])
+    eval_text = response.content
+    
+    is_correct = "VERDICT: PASS" in eval_text.upper() or "VERDICT:PASS" in eval_text.upper()
+    feedback = eval_text.split("FEEDBACK:")[-1].strip() if "FEEDBACK:" in eval_text else eval_text
+    
+    # Mark as verified if correct
+    if is_correct:
+        await mark_concept_verified(request.user_id, request.concept_id, True)
+    
+    # Get section ID from concept ID
+    section_id = request.concept_id.rsplit(".", 1)[0] if "." in request.concept_id else request.concept_id
+    
+    # Check for next concept to verify
+    status = await get_section_learning_status(request.user_id, section_id)
+    to_verify = [c for c in status["concepts"] if c["explained"] and not c["verified"]]
+    
+    next_concept = None
+    next_question = None
+    
+    if to_verify:
+        next_concept = to_verify[0]
+        
+        # Generate next question
+        prompt = f"""Generate a simple question to check if a student understands: "{next_concept['title']}".
+Be friendly and encouraging. Respond with ONLY the question."""
+        
+        q_response = await llm.ainvoke([HumanMessage(content=prompt)])
+        next_question = q_response.content
+    
+    return VerifyUnderstandingResponse(
+        is_correct=is_correct,
+        feedback=feedback,
+        next_concept=next_concept,
+        next_question=next_question,
+        all_verified=status["all_verified"],
+        section_id=section_id
+    )

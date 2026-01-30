@@ -327,3 +327,407 @@ async def get_last_session(user_id: str) -> dict | None:
     """
     results = await neo4j_client.execute_read(query, user_id=user_id)
     return results[0] if results else None
+
+
+# === Insight Management Functions ===
+
+async def create_insight(
+    user_id: str,
+    insight_type: str,  # COMPETENCY, MISCONCEPTION, PREFERENCE
+    content: str,
+    concept_ids: list[str],
+    confidence: float = 1.0
+) -> dict:
+    """Create a new Insight node and link it to the user and concepts.
+    
+    Args:
+        user_id: The user's ID
+        insight_type: Type of insight (COMPETENCY, MISCONCEPTION, PREFERENCE)
+        content: Description of the insight
+        concept_ids: List of concept IDs this insight is about
+        confidence: How certain the agent is about this insight (0.0-1.0)
+    
+    Returns:
+        The created insight with its ID
+    """
+    import uuid
+    
+    insight_id = f"insight-{uuid.uuid4().hex[:12]}"
+    
+    # Create insight node and link to user
+    query = """
+    MATCH (u:User {id: $user_id})
+    CREATE (i:Insight {
+        id: $insight_id,
+        type: $insight_type,
+        content: $content,
+        confidence: $confidence,
+        created_at: datetime()
+    })
+    MERGE (u)-[:HAS_INSIGHT]->(i)
+    WITH i
+    UNWIND $concept_ids AS concept_id
+    MATCH (c:Concept {id: concept_id})
+    MERGE (i)-[:ABOUT]->(c)
+    RETURN i.id as id, i.type as type, i.content as content, i.created_at as created_at
+    """
+    
+    results = await neo4j_client.execute_read(
+        query,
+        user_id=user_id,
+        insight_id=insight_id,
+        insight_type=insight_type,
+        content=content,
+        confidence=confidence,
+        concept_ids=concept_ids
+    )
+    
+    # Invalidate user state cache
+    await cache_delete(f"user_state:{user_id}")
+    
+    if results:
+        return {
+            "id": results[0]["id"],
+            "type": results[0]["type"],
+            "content": results[0]["content"],
+            "created_at": str(results[0]["created_at"]) if results[0]["created_at"] else None
+        }
+    return {"id": insight_id, "type": insight_type, "content": content}
+
+
+async def get_insights_for_concept(user_id: str, concept_id: str) -> list[dict]:
+    """Get all active insights for a user related to a specific concept.
+    
+    Returns insights that are:
+    1. Linked to the user
+    2. About the specified concept
+    3. Not superseded by a newer insight
+    
+    Args:
+        user_id: The user's ID
+        concept_id: The concept to get insights for
+    
+    Returns:
+        List of insight dictionaries
+    """
+    query = """
+    MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(i:Insight)-[:ABOUT]->(c:Concept {id: $concept_id})
+    WHERE i.superseded_by IS NULL
+    RETURN i.id as id, 
+           i.type as type, 
+           i.content as content, 
+           i.confidence as confidence,
+           i.created_at as created_at
+    ORDER BY i.created_at DESC
+    """
+    
+    results = await neo4j_client.execute_read(
+        query,
+        user_id=user_id,
+        concept_id=concept_id
+    )
+    
+    return [
+        {
+            "id": r["id"],
+            "type": r["type"],
+            "content": r["content"],
+            "confidence": r["confidence"],
+            "created_at": str(r["created_at"]) if r["created_at"] else None
+        }
+        for r in results
+    ] if results else []
+
+
+async def get_all_user_insights(user_id: str, limit: int = 20) -> list[dict]:
+    """Get all active insights for a user across all concepts.
+    
+    Args:
+        user_id: The user's ID
+        limit: Maximum number of insights to return
+    
+    Returns:
+        List of insight dictionaries with associated concept IDs
+    """
+    query = """
+    MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(i:Insight)-[:ABOUT]->(c:Concept)
+    WHERE i.superseded_by IS NULL
+    WITH i, collect(c.id) as concept_ids
+    RETURN i.id as id,
+           i.type as type,
+           i.content as content,
+           i.confidence as confidence,
+           i.created_at as created_at,
+           concept_ids
+    ORDER BY i.created_at DESC
+    LIMIT $limit
+    """
+    
+    results = await neo4j_client.execute_read(
+        query,
+        user_id=user_id,
+        limit=limit
+    )
+    
+    return [
+        {
+            "id": r["id"],
+            "type": r["type"],
+            "content": r["content"],
+            "confidence": r["confidence"],
+            "created_at": str(r["created_at"]) if r["created_at"] else None,
+            "concept_ids": r["concept_ids"]
+        }
+        for r in results
+    ] if results else []
+
+
+async def supersede_insight(old_insight_id: str, new_insight_id: str) -> bool:
+    """Mark an old insight as superseded by a new one.
+    
+    This is used when new information contradicts or updates previous insights.
+    
+    Args:
+        old_insight_id: ID of the insight to supersede
+        new_insight_id: ID of the new insight that replaces it
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    query = """
+    MATCH (old:Insight {id: $old_insight_id})
+    MATCH (new:Insight {id: $new_insight_id})
+    SET old.superseded_by = $new_insight_id
+    MERGE (new)-[:SUPERSEDES]->(old)
+    RETURN old.id as id
+    """
+    
+    results = await neo4j_client.execute_read(
+        query,
+        old_insight_id=old_insight_id,
+        new_insight_id=new_insight_id
+    )
+    
+    return bool(results)
+
+
+# === Concept Explanation Tracking Functions ===
+
+async def mark_concept_explained(user_id: str, concept_id: str) -> dict:
+    """Mark a concept as explained/taught to the user.
+    
+    Creates a TAUGHT insight if one doesn't already exist for this concept.
+    Idempotent - calling multiple times won't create duplicates.
+    
+    Args:
+        user_id: The user's ID
+        concept_id: The concept that was explained
+        
+    Returns:
+        The insight (new or existing)
+    """
+    # First check if TAUGHT insight already exists for this concept
+    query = """
+    MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(i:Insight {type: "TAUGHT"})-[:ABOUT]->(c:Concept {id: $concept_id})
+    WHERE i.superseded_by IS NULL
+    RETURN i.id as id, i.verified as verified, i.created_at as created_at
+    """
+    
+    results = await neo4j_client.execute_read(
+        query,
+        user_id=user_id,
+        concept_id=concept_id
+    )
+    
+    if results:
+        # Already explained, return existing
+        return {
+            "id": results[0]["id"],
+            "type": "TAUGHT",
+            "verified": results[0]["verified"] or False,
+            "created_at": str(results[0]["created_at"]) if results[0]["created_at"] else None,
+            "already_existed": True
+        }
+    
+    # Create new TAUGHT insight
+    import uuid
+    insight_id = f"insight-{uuid.uuid4().hex[:12]}"
+    
+    create_query = """
+    MATCH (u:User {id: $user_id})
+    MATCH (c:Concept {id: $concept_id})
+    CREATE (i:Insight {
+        id: $insight_id,
+        type: "TAUGHT",
+        content: "Concept explained to student",
+        confidence: 1.0,
+        verified: false,
+        created_at: datetime()
+    })
+    MERGE (u)-[:HAS_INSIGHT]->(i)
+    MERGE (i)-[:ABOUT]->(c)
+    RETURN i.id as id, i.created_at as created_at
+    """
+    
+    results = await neo4j_client.execute_write(
+        create_query,
+        user_id=user_id,
+        concept_id=concept_id,
+        insight_id=insight_id
+    )
+    
+    # Invalidate cache
+    await cache_delete(f"user_state:{user_id}")
+    
+    return {
+        "id": insight_id,
+        "type": "TAUGHT",
+        "verified": False,
+        "created_at": str(results[0]["created_at"]) if results else None,
+        "already_existed": False
+    }
+
+
+async def get_section_learning_status(user_id: str, section_id: str) -> dict:
+    """Get the learning status for all concepts in a section.
+    
+    Args:
+        user_id: The user's ID
+        section_id: The section ID (e.g., "7.3")
+        
+    Returns:
+        {
+            "section_id": "7.3",
+            "concepts": [
+                {"id": "7.3.1", "title": "...", "explained": true, "verified": false},
+                ...
+            ],
+            "all_explained": bool,
+            "all_verified": bool,
+            "explained_count": int,
+            "verified_count": int,
+            "total_count": int
+        }
+    """
+    # Get all concepts in the section and their TAUGHT insights for this user
+    query = """
+    MATCH (c:Concept)
+    WHERE c.id STARTS WITH $section_prefix
+    OPTIONAL MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(i:Insight {type: "TAUGHT"})-[:ABOUT]->(c)
+    WHERE i.superseded_by IS NULL
+    RETURN c.id as id, 
+           c.title as title,
+           CASE WHEN i IS NOT NULL THEN true ELSE false END as explained,
+           COALESCE(i.verified, false) as verified
+    ORDER BY c.id
+    """
+    
+    results = await neo4j_client.execute_read(
+        query,
+        user_id=user_id,
+        section_prefix=section_id + "."
+    )
+    
+    # Also check if the section itself (e.g., "7.3") is a concept
+    section_query = """
+    MATCH (c:Concept {id: $section_id})
+    OPTIONAL MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(i:Insight {type: "TAUGHT"})-[:ABOUT]->(c)
+    WHERE i.superseded_by IS NULL
+    RETURN c.id as id,
+           c.title as title,
+           CASE WHEN i IS NOT NULL THEN true ELSE false END as explained,
+           COALESCE(i.verified, false) as verified
+    """
+    
+    section_result = await neo4j_client.execute_read(
+        section_query,
+        user_id=user_id,
+        section_id=section_id
+    )
+    
+    concepts = []
+    
+    # Add section itself if it exists as a concept
+    if section_result:
+        concepts.append({
+            "id": section_result[0]["id"],
+            "title": section_result[0]["title"] or section_id,
+            "explained": section_result[0]["explained"],
+            "verified": section_result[0]["verified"]
+        })
+    
+    # Add sub-concepts
+    if results:
+        for r in results:
+            concepts.append({
+                "id": r["id"],
+                "title": r["title"] or r["id"],
+                "explained": r["explained"],
+                "verified": r["verified"]
+            })
+    
+    explained_count = sum(1 for c in concepts if c["explained"])
+    verified_count = sum(1 for c in concepts if c["verified"])
+    total_count = len(concepts)
+    
+    return {
+        "section_id": section_id,
+        "concepts": concepts,
+        "all_explained": explained_count == total_count and total_count > 0,
+        "all_verified": verified_count == total_count and total_count > 0,
+        "explained_count": explained_count,
+        "verified_count": verified_count,
+        "total_count": total_count
+    }
+
+
+async def mark_concept_verified(user_id: str, concept_id: str, is_verified: bool = True) -> dict:
+    """Mark a concept as verified (student demonstrated understanding).
+    
+    Updates the TAUGHT insight's verified field.
+    Also creates a COMPETENCY insight if verified=True.
+    
+    Args:
+        user_id: The user's ID
+        concept_id: The concept to mark as verified
+        is_verified: Whether the student passed verification
+        
+    Returns:
+        Updated status
+    """
+    # Update the TAUGHT insight
+    query = """
+    MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(i:Insight {type: "TAUGHT"})-[:ABOUT]->(c:Concept {id: $concept_id})
+    WHERE i.superseded_by IS NULL
+    SET i.verified = $is_verified,
+        i.verified_at = datetime()
+    RETURN i.id as id, c.title as concept_title
+    """
+    
+    results = await neo4j_client.execute_write(
+        query,
+        user_id=user_id,
+        concept_id=concept_id,
+        is_verified=is_verified
+    )
+    
+    concept_title = results[0]["concept_title"] if results else concept_id
+    
+    # If verified, also create a COMPETENCY insight
+    if is_verified and results:
+        await create_insight(
+            user_id=user_id,
+            insight_type="COMPETENCY",
+            content=f"Demonstrated understanding of '{concept_title}' through verification",
+            concept_ids=[concept_id],
+            confidence=0.9
+        )
+    
+    # Invalidate cache
+    await cache_delete(f"user_state:{user_id}")
+    
+    return {
+        "concept_id": concept_id,
+        "verified": is_verified,
+        "insight_updated": bool(results)
+    }
