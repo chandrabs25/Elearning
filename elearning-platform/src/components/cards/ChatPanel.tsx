@@ -2,7 +2,7 @@
 
 import { useRef, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Sparkles, MessageCircle, CheckCircle, Brain, Loader2 } from "lucide-react";
+import { X, Sparkles, MessageCircle, CheckCircle, Brain, Loader2, ArrowRight } from "lucide-react";
 import "katex/dist/katex.min.css";
 
 // Dynamic import to avoid SSR issues
@@ -49,6 +49,7 @@ interface ContentItem {
     latex?: string;
     label?: string;
     description?: string;
+    items?: string[];  // For 'list' type content
 }
 
 export interface ChatMessage {
@@ -68,7 +69,7 @@ interface SectionStatus {
 
 interface ChatPanelProps {
     context?: {
-        current_section_id?: string;
+        current_section?: string;
         current_section_title?: string;
         user_id?: string;
     };
@@ -79,6 +80,7 @@ interface ChatPanelProps {
     onFocus?: () => void;
     onClose?: () => void;
     onSuggestionClick?: (suggestion: string) => void;
+    onNextSection?: () => void;  // Navigate to next section
 }
 
 export default function ChatPanel({
@@ -90,6 +92,7 @@ export default function ChatPanel({
     onFocus,
     onClose,
     onSuggestionClick,
+    onNextSection,
 }: ChatPanelProps) {
     const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -104,17 +107,17 @@ export default function ChatPanel({
 
     // Fetch section status when section changes
     useEffect(() => {
-        if (context?.current_section_id && context?.user_id) {
+        if (context?.current_section && context?.user_id) {
             fetchSectionStatus();
         }
-    }, [context?.current_section_id, context?.user_id]);
+    }, [context?.current_section, context?.user_id]);
 
     const fetchSectionStatus = async () => {
-        if (!context?.current_section_id || !context?.user_id) return;
+        if (!context?.current_section || !context?.user_id) return;
 
         try {
             const res = await fetch(
-                `${BACKEND_URL}/api/tutor/section-status/${context.current_section_id}?user_id=${context.user_id}`
+                `${BACKEND_URL}/api/tutor/section-status/${context.current_section}?user_id=${context.user_id}`
             );
             if (res.ok) {
                 const data = await res.json();
@@ -126,7 +129,7 @@ export default function ChatPanel({
     };
 
     const startUnderstandingCheck = async () => {
-        if (!context?.current_section_id || !context?.user_id) return;
+        if (!context?.current_section || !context?.user_id) return;
 
         setIsCheckingUnderstanding(true);
         setVerificationFeedback(null);
@@ -137,7 +140,7 @@ export default function ChatPanel({
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     user_id: context.user_id,
-                    section_id: context.current_section_id
+                    section_id: context.current_section
                 })
             });
 
@@ -269,7 +272,7 @@ export default function ChatPanel({
                                 </span>
                             ) : (
                                 <span className="text-white/40 bg-white/5 px-2 py-1 rounded-full">
-                                    {sectionStatus.verified_count}/{sectionStatus.explained_count} verified
+                                    {sectionStatus.verified_count}/{sectionStatus.total_count} verified
                                 </span>
                             )}
                         </div>
@@ -317,8 +320,8 @@ export default function ChatPanel({
                                 initial={{ opacity: 0, scale: 0.95 }}
                                 animate={{ opacity: 1, scale: 1 }}
                                 className={`p-4 rounded-xl border ${verificationFeedback.isCorrect
-                                        ? "bg-green-500/10 border-green-500/30"
-                                        : "bg-amber-500/10 border-amber-500/30"
+                                    ? "bg-green-500/10 border-green-500/30"
+                                    : "bg-amber-500/10 border-amber-500/30"
                                     }`}
                             >
                                 <div className="flex items-center gap-2 mb-2">
@@ -441,9 +444,20 @@ export default function ChatPanel({
 
                 {/* All verified celebration */}
                 {sectionStatus?.all_verified && (
-                    <div className="flex items-center justify-center gap-2 px-4 py-2 bg-green-500/10 border border-green-500/30 rounded-xl text-green-400">
-                        <CheckCircle className="w-4 h-4" />
-                        <span className="text-sm">Section Mastered! 🎉</span>
+                    <div className="space-y-2">
+                        <div className="flex items-center justify-center gap-2 px-4 py-2 bg-green-500/10 border border-green-500/30 rounded-xl text-green-400">
+                            <CheckCircle className="w-4 h-4" />
+                            <span className="text-sm">Section Mastered! 🎉</span>
+                        </div>
+                        {onNextSection && (
+                            <button
+                                onClick={onNextSection}
+                                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-green-500/20 to-emerald-500/20 border border-green-500/30 rounded-xl text-green-300 hover:from-green-500/30 hover:to-emerald-500/30 transition-all"
+                            >
+                                <ArrowRight className="w-4 h-4" />
+                                Continue to Next Section
+                            </button>
+                        )}
                     </div>
                 )}
 
@@ -470,8 +484,49 @@ export default function ChatPanel({
 }
 
 function renderMessageContent(content: ContentItem[] | string) {
+    // Handle null/undefined
+    if (!content) {
+        return <p className="text-white/80">...</p>;
+    }
+
+    // If content is a string, check if it's a stringified array
     if (typeof content === "string") {
-        return <p className="text-white/80">{parseInlineLatex(content)}</p>;
+        // Check if it looks like a stringified array/object (Python or JSON format)
+        const trimmed = content.trim();
+        if (trimmed.startsWith("[{") || trimmed.startsWith('[{"')) {
+            try {
+                // Try parsing as JSON first
+                let parsed = JSON.parse(trimmed);
+                if (Array.isArray(parsed)) {
+                    content = parsed;
+                }
+            } catch {
+                // Try fixing Python-style single quotes to JSON double quotes
+                try {
+                    const fixed = trimmed
+                        .replace(/'/g, '"')
+                        .replace(/True/g, 'true')
+                        .replace(/False/g, 'false')
+                        .replace(/None/g, 'null');
+                    let parsed = JSON.parse(fixed);
+                    if (Array.isArray(parsed)) {
+                        content = parsed;
+                    }
+                } catch {
+                    // If parsing fails, treat as regular text
+                    return <p className="text-white/80">{parseInlineLatex(trimmed)}</p>;
+                }
+            }
+        } else {
+            // Regular string content
+            return <p className="text-white/80">{parseInlineLatex(content)}</p>;
+        }
+    }
+
+    // Final check: ensure content is actually an array
+    if (!Array.isArray(content)) {
+        console.warn("Content is not an array:", content);
+        return <p className="text-white/80">{String(content)}</p>;
     }
 
     return (
@@ -500,12 +555,34 @@ function renderMessageContent(content: ContentItem[] | string) {
                                 <span>{parseInlineLatex(item.text || item.content || "")}</span>
                             </div>
                         );
+                    case "list":
+                        // Handle list type with items array
+                        if (item.items && Array.isArray(item.items)) {
+                            return (
+                                <ul key={i} className="space-y-1 ml-4">
+                                    {item.items.map((listItem: string, j: number) => (
+                                        <li key={j} className="flex gap-2 text-white/70">
+                                            <span className="text-blue-400">•</span>
+                                            <span>{parseInlineLatex(listItem)}</span>
+                                        </li>
+                                    ))}
+                                </ul>
+                            );
+                        }
+                        return null;
                     default:
-                        return (
-                            <p key={i} className="text-white/60">
-                                {item.text || item.content || JSON.stringify(item)}
-                            </p>
-                        );
+                        // For unknown types, try to extract text content if available
+                        const textContent = item.text || item.content;
+                        if (textContent) {
+                            return (
+                                <p key={i} className="text-white/60">
+                                    {parseInlineLatex(textContent)}
+                                </p>
+                            );
+                        }
+                        // Only show JSON for truly unknown structures
+                        console.warn("Unknown content type:", item.type, item);
+                        return null;
                 }
             })}
         </div>

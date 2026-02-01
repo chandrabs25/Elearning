@@ -22,7 +22,7 @@ interface Panel {
 
 interface ProgressData {
     lifetime_mastery: number;
-    current_section_id?: string;
+    current_section?: string;
     current_section_mastery?: number;
     exploration_points?: number;
     sections_progress: Array<{
@@ -138,14 +138,6 @@ export default function TutorV2Page() {
         initSession();
     }, []);
 
-    // Load chat history when section changes
-    useEffect(() => {
-        const sectionId = context.current_section as string;
-        if (sectionId) {
-            fetchChatHistory(sectionId);
-        }
-    }, [context.current_section]);
-
     // Determine if a ChatPanel exists and which panel is focused
     const chatPanelIndex = ui?.panels.findIndex(p => p.type === "ChatPanel") ?? -1;
     const hasChatPanel = chatPanelIndex >= 0;
@@ -155,6 +147,14 @@ export default function TutorV2Page() {
     const focusedPanelType = focusedPanelIndex !== null && ui?.panels[focusedPanelIndex]
         ? ui.panels[focusedPanelIndex].type
         : null;
+
+    // Load chat history when section changes or ChatPanel opens
+    useEffect(() => {
+        const sectionId = context.current_section as string;
+        if (sectionId && hasChatPanel) {
+            fetchChatHistory(sectionId);
+        }
+    }, [context.current_section, hasChatPanel]);
 
     // Keyboard shortcuts
     useEffect(() => {
@@ -253,7 +253,7 @@ export default function TutorV2Page() {
                 const data = await res.json();
                 setProgress({
                     lifetime_mastery: data.lifetime_mastery,
-                    current_section_id: context.current_section as string,
+                    current_section: context.current_section as string,
                     exploration_points: data.exploration_points || 0,
                     sections_progress: data.sections_progress
                 });
@@ -261,6 +261,20 @@ export default function TutorV2Page() {
         } catch (err) {
             console.error("Failed to fetch progress:", err);
         }
+    };
+
+    // Get next section ID based on current section
+    const getNextSectionId = (): string | null => {
+        const currentSectionId = context.current_section as string;
+        if (!currentSectionId || !progress?.sections_progress) return null;
+
+        const sections = progress.sections_progress;
+        const currentIndex = sections.findIndex(s => s.id === currentSectionId);
+
+        if (currentIndex >= 0 && currentIndex < sections.length - 1) {
+            return sections[currentIndex + 1].id;
+        }
+        return null;  // Already at last section
     };
 
     // Fetch chat history for a section
@@ -480,7 +494,7 @@ export default function TutorV2Page() {
                     user_id: USER_ID,
                     message,
                     context: {
-                        current_section_id: context.current_section,
+                        current_section: context.current_section,
                         current_section_title: context.section_title
                     },
                     history: chatMessages.slice(-10)
@@ -781,6 +795,12 @@ export default function TutorV2Page() {
                                         isChatTyping={panel.type === "ChatPanel" ? isChatTyping : undefined}
                                         chatSuggestions={panel.type === "ChatPanel" ? chatSuggestions : undefined}
                                         onChatSuggestionClick={panel.type === "ChatPanel" ? handleChatSuggestionClick : undefined}
+                                        onNextSection={panel.type === "ChatPanel" ? () => {
+                                            const nextId = getNextSectionId();
+                                            if (nextId) {
+                                                sendTutorMessage(`teach me ${nextId}`, true);
+                                            }
+                                        } : undefined}
                                         // Exercise-specific props
                                         onExerciseSubmit={panel.type === "ExercisePanel" ? handleExerciseSubmit : undefined}
                                     />
