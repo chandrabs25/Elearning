@@ -18,20 +18,35 @@ const InlineMath = dynamic(
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
-// Helper to parse text with inline LaTeX ($...$)
+// Helper to parse text with inline LaTeX ($...$) and markdown formatting (**bold**, *italic*)
 const parseInlineLatex = (text: string): React.ReactNode => {
     if (!text) return null;
-    const regex = /\$([^$]+)\$/g;
+
+    // Combined regex for LaTeX, bold, and italic
+    // Order matters: check bold (**) before italic (*) to avoid conflicts
+    const regex = /\$([^$]+)\$|\*\*([^*]+)\*\*|\*([^*]+)\*/g;
     const parts: React.ReactNode[] = [];
     let lastIndex = 0;
     let match;
     let key = 0;
 
     while ((match = regex.exec(text)) !== null) {
+        // Add text before the match
         if (match.index > lastIndex) {
             parts.push(text.slice(lastIndex, match.index));
         }
-        parts.push(<InlineMath key={key++}>{match[1]}</InlineMath>);
+
+        if (match[1]) {
+            // LaTeX: $...$
+            parts.push(<InlineMath key={key++}>{match[1]}</InlineMath>);
+        } else if (match[2]) {
+            // Bold: **...**
+            parts.push(<strong key={key++} className="font-semibold text-white">{match[2]}</strong>);
+        } else if (match[3]) {
+            // Italic: *...*
+            parts.push(<em key={key++} className="italic text-white/90">{match[3]}</em>);
+        }
+
         lastIndex = regex.lastIndex;
     }
 
@@ -42,11 +57,69 @@ const parseInlineLatex = (text: string): React.ReactNode => {
     return parts.length > 0 ? parts : text;
 };
 
+// Helper to parse full markdown text with headings, paragraphs, and inline formatting
+const parseMarkdownText = (text: string): React.ReactNode => {
+    if (!text) return null;
+
+    // Split by double newlines first (paragraphs), then handle each line
+    const lines = text.split(/\n/);
+    const elements: React.ReactNode[] = [];
+    let key = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+
+        // Skip empty lines but add spacing
+        if (!trimmed) {
+            continue;
+        }
+
+        // Check for markdown headings
+        if (trimmed.startsWith('### ')) {
+            elements.push(
+                <h3 key={key++} className="text-lg font-semibold text-white mt-4 mb-2">
+                    {parseInlineLatex(trimmed.slice(4))}
+                </h3>
+            );
+        } else if (trimmed.startsWith('## ')) {
+            elements.push(
+                <h2 key={key++} className="text-xl font-semibold text-white mt-4 mb-2">
+                    {parseInlineLatex(trimmed.slice(3))}
+                </h2>
+            );
+        } else if (trimmed.startsWith('# ')) {
+            elements.push(
+                <h1 key={key++} className="text-2xl font-bold text-white mt-4 mb-2">
+                    {parseInlineLatex(trimmed.slice(2))}
+                </h1>
+            );
+        } else if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+            // Bullet points
+            elements.push(
+                <li key={key++} className="text-white/80 ml-4 list-disc">
+                    {parseInlineLatex(trimmed.slice(2))}
+                </li>
+            );
+        } else {
+            // Regular paragraph
+            elements.push(
+                <p key={key++} className="text-white/80 leading-relaxed mb-2">
+                    {parseInlineLatex(trimmed)}
+                </p>
+            );
+        }
+    }
+
+    return <div className="space-y-1">{elements}</div>;
+};
+
 interface ContentItem {
     type: string;
     text?: string;
     content?: string;
     latex?: string;
+    equation?: string;  // For 'equation' type content
     label?: string;
     description?: string;
     items?: string[];  // For 'list' type content
@@ -334,7 +407,50 @@ export default function ChatPanel({
                                         {verificationFeedback.isCorrect ? "Correct!" : "Keep Learning"}
                                     </span>
                                 </div>
-                                <p className="text-white/70 text-sm">{verificationFeedback.feedback}</p>
+                                <p className="text-white/70 text-sm mb-4">{verificationFeedback.feedback}</p>
+
+                                {/* Navigation buttons based on result */}
+                                <div className="flex gap-2 pt-2 border-t border-white/10">
+                                    {verificationFeedback.isCorrect ? (
+                                        <>
+                                            <button
+                                                onClick={() => {
+                                                    setIsCheckingUnderstanding(false);
+                                                    setVerificationFeedback(null);
+                                                    fetchSectionStatus();
+                                                }}
+                                                className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-green-500/20 border border-green-500/30 rounded-xl text-green-400 hover:bg-green-500/30 transition-colors"
+                                            >
+                                                <ArrowRight className="w-4 h-4" />
+                                                Continue to Next Concept
+                                            </button>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <button
+                                                onClick={() => {
+                                                    setVerificationFeedback(null);
+                                                    setVerificationAnswer("");
+                                                }}
+                                                className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-amber-500/20 border border-amber-500/30 rounded-xl text-amber-400 hover:bg-amber-500/30 transition-colors"
+                                            >
+                                                Try Again
+                                            </button>
+                                            <button
+                                                onClick={() => {
+                                                    setIsCheckingUnderstanding(false);
+                                                    setVerificationFeedback(null);
+                                                    // Trigger a help request - send a message asking for clarification
+                                                    onSuggestionClick?.("Can you explain this concept again? I'm having trouble understanding.");
+                                                }}
+                                                className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-blue-500/20 border border-blue-500/30 rounded-xl text-blue-400 hover:bg-blue-500/30 transition-colors"
+                                            >
+                                                <MessageCircle className="w-4 h-4" />
+                                                Ask for Help
+                                            </button>
+                                        </>
+                                    )}
+                                </div>
                             </motion.div>
                         )}
 
@@ -431,8 +547,8 @@ export default function ChatPanel({
 
             {/* Footer with Check Understanding button and suggestions */}
             <div className="flex-shrink-0 p-4 border-t border-white/10 space-y-3">
-                {/* Check Understanding Button */}
-                {sectionStatus && sectionStatus.explained_count > 0 && !sectionStatus.all_verified && !isCheckingUnderstanding && (
+                {/* Check Understanding Button - only show if there are unverified explained concepts */}
+                {sectionStatus && sectionStatus.explained_count > 0 && (sectionStatus.explained_count - sectionStatus.verified_count) > 0 && !sectionStatus.all_verified && !isCheckingUnderstanding && (
                     <button
                         onClick={startUnderstandingCheck}
                         className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-500/20 to-blue-500/20 border border-purple-500/30 rounded-xl text-purple-300 hover:from-purple-500/30 hover:to-blue-500/30 transition-all"
@@ -493,7 +609,38 @@ function renderMessageContent(content: ContentItem[] | string) {
     if (typeof content === "string") {
         // Check if it looks like a stringified array/object (Python or JSON format)
         const trimmed = content.trim();
-        if (trimmed.startsWith("[{") || trimmed.startsWith('[{"')) {
+
+        // Check for Python dict-style content without brackets (legacy format)
+        // Pattern: {'type': 'text', 'text': '...'}, {'type': 'latex', ...}
+        if (trimmed.includes("'type':") && trimmed.includes("'text':")) {
+            try {
+                // Wrap in brackets if not already wrapped
+                const toWrap = trimmed.startsWith("[") ? trimmed : `[${trimmed}]`;
+                // Convert Python-style to JSON-style
+                const fixed = toWrap
+                    .replace(/\\'/g, '___ESCAPED_QUOTE___')  // Protect escaped quotes
+                    .replace(/'/g, '"')                       // Convert structural quotes
+                    .replace(/___ESCAPED_QUOTE___/g, "'")     // Restore as regular apostrophes
+                    .replace(/True/g, 'true')
+                    .replace(/False/g, 'false')
+                    .replace(/None/g, 'null')
+                    // Clean up trailing commas in arrays/objects
+                    .replace(/,\s*([}\]])/g, '$1');
+                let parsed = JSON.parse(fixed);
+                if (Array.isArray(parsed)) {
+                    content = parsed;
+                }
+            } catch {
+                // If parsing fails, show as plain text (remove the dict formatting)
+                const plainText = trimmed
+                    .replace(/\{['"]*type['"]*:\s*['"]*text['"]*,\s*['"]*text['"]*:\s*/g, '')
+                    .replace(/\},\s*\{['"]*type['"]*:\s*['"]*latex['"]*,\s*['"]*content['"]*:\s*/g, '\n')
+                    .replace(/\}[,\s]*/g, ' ')
+                    .replace(/['"]/g, '');
+                return <p className="text-white/80">{parseInlineLatex(plainText)}</p>;
+            }
+        }
+        else if (trimmed.startsWith("[{") || trimmed.startsWith('[{"') || trimmed.startsWith("[{'")) {
             try {
                 // Try parsing as JSON first
                 let parsed = JSON.parse(trimmed);
@@ -503,8 +650,11 @@ function renderMessageContent(content: ContentItem[] | string) {
             } catch {
                 // Try fixing Python-style single quotes to JSON double quotes
                 try {
+                    // More careful conversion: preserve escaped quotes in text content
                     const fixed = trimmed
-                        .replace(/'/g, '"')
+                        .replace(/\\'/g, '___ESCAPED_QUOTE___')  // Protect escaped quotes
+                        .replace(/'/g, '"')                       // Convert structural quotes
+                        .replace(/___ESCAPED_QUOTE___/g, "'")     // Restore as regular apostrophes
                         .replace(/True/g, 'true')
                         .replace(/False/g, 'false')
                         .replace(/None/g, 'null');
@@ -514,19 +664,19 @@ function renderMessageContent(content: ContentItem[] | string) {
                     }
                 } catch {
                     // If parsing fails, treat as regular text
-                    return <p className="text-white/80">{parseInlineLatex(trimmed)}</p>;
+                    return <div className="text-white/80">{parseMarkdownText(trimmed)}</div>;
                 }
             }
         } else {
             // Regular string content
-            return <p className="text-white/80">{parseInlineLatex(content)}</p>;
+            return <div className="text-white/80">{parseMarkdownText(content)}</div>;
         }
     }
 
     // Final check: ensure content is actually an array
     if (!Array.isArray(content)) {
         console.warn("Content is not an array:", content);
-        return <p className="text-white/80">{String(content)}</p>;
+        return <div className="text-white/80">{parseMarkdownText(String(content))}</div>;
     }
 
     return (
@@ -535,9 +685,9 @@ function renderMessageContent(content: ContentItem[] | string) {
                 switch (item.type) {
                     case "text":
                         return (
-                            <p key={i} className="text-white/80 leading-relaxed">
-                                {parseInlineLatex(item.text || item.content || "")}
-                            </p>
+                            <div key={i} className="text-white/80 leading-relaxed">
+                                {parseMarkdownText(item.text || item.content || "")}
+                            </div>
                         );
                     case "latex":
                         return (
@@ -546,6 +696,13 @@ function renderMessageContent(content: ContentItem[] | string) {
                                 {item.description && (
                                     <p className="mt-2 text-sm text-white/50 italic">{item.description}</p>
                                 )}
+                            </div>
+                        );
+                    case "equation":
+                        // Similar to latex but uses 'equation' property
+                        return (
+                            <div key={i} className="p-3 bg-purple-500/10 rounded-xl overflow-x-auto">
+                                <BlockMath>{item.equation || item.content || ""}</BlockMath>
                             </div>
                         );
                     case "listItem":

@@ -49,6 +49,69 @@ async def get_user_state(user_id: str) -> dict:
     return state
 
 
+async def save_tutor_state(user_id: str, tutor_state: dict) -> None:
+    """Persist tutor session state (mode, prereq info) to Neo4j User node."""
+    import json
+    query = """
+    MATCH (u:User {id: $user_id})
+    SET u.tutor_mode = $mode,
+        u.tutor_prereq_id = $prereq_id,
+        u.tutor_prereq_title = $prereq_title,
+        u.tutor_prereq_question = $prereq_question,
+        u.tutor_prereq_chain = $prereq_chain,
+        u.tutor_pending_verification = $pending_verification
+    """
+    await neo4j_client.execute_write(
+        query,
+        user_id=user_id,
+        mode=tutor_state.get("mode", "normal"),
+        prereq_id=tutor_state.get("current_prereq_id"),
+        prereq_title=tutor_state.get("current_prereq_title"),
+        prereq_question=tutor_state.get("prereq_question"),
+        prereq_chain=json.dumps(tutor_state.get("prerequisite_chain", [])),
+        pending_verification=tutor_state.get("pending_verification_concept")
+    )
+    
+    # Invalidate cache
+    await cache_delete(f"tutor_state:{user_id}")
+
+
+async def get_tutor_state(user_id: str) -> dict:
+    """Retrieve persisted tutor session state from Neo4j User node."""
+    import json
+    cache_key = f"tutor_state:{user_id}"
+    
+    cached = await cache_get(cache_key)
+    if cached:
+        return cached
+    
+    query = """
+    MATCH (u:User {id: $user_id})
+    RETURN u.tutor_mode as mode,
+           u.tutor_prereq_id as prereq_id,
+           u.tutor_prereq_title as prereq_title,
+           u.tutor_prereq_question as prereq_question,
+           u.tutor_prereq_chain as prereq_chain,
+           u.tutor_pending_verification as pending_verification
+    """
+    results = await neo4j_client.execute_read(query, user_id=user_id)
+    if not results or not results[0]:
+        return {}
+    
+    row = results[0]
+    state = {
+        "mode": row.get("mode") or "normal",
+        "current_prereq_id": row.get("prereq_id"),
+        "current_prereq_title": row.get("prereq_title"),
+        "prereq_question": row.get("prereq_question"),
+        "prerequisite_chain": json.loads(row.get("prereq_chain") or "[]"),
+        "pending_verification_concept": row.get("pending_verification")
+    }
+    
+    await cache_set(cache_key, state)
+    return state
+
+
 async def update_current_concept(user_id: str, concept_id: str) -> None:
     """Update user's current studying concept."""
     query = """
@@ -554,7 +617,8 @@ async def mark_concept_explained(user_id: str, concept_id: str) -> dict:
     insight_id = f"insight-{uuid.uuid4().hex[:12]}"
     
     create_query = """
-    MATCH (u:User {id: $user_id})
+    MERGE (u:User {id: $user_id})
+    WITH u
     MATCH (c:Concept {id: $concept_id})
     CREATE (i:Insight {
         id: $insight_id,
@@ -589,7 +653,10 @@ async def mark_concept_explained(user_id: str, concept_id: str) -> dict:
 
 
 async def get_section_learning_status(user_id: str, section_id: str) -> dict:
-    """Get the learning status for all concepts in a section.
+    """Get the learning status for all sub-concepts in a section.
+    
+    Note: Only counts sub-concepts (e.g., 7.3.1, 7.3.2) for progress tracking,
+    not the parent section itself (7.3).
     
     Args:
         user_id: The user's ID
@@ -609,7 +676,7 @@ async def get_section_learning_status(user_id: str, section_id: str) -> dict:
             "total_count": int
         }
     """
-    # Get all concepts in the section and their TAUGHT insights for this user
+    # Get all SUB-CONCEPTS in the section (excludes section itself)
     query = """
     MATCH (c:Concept)
     WHERE c.id STARTS WITH $section_prefix
@@ -628,35 +695,8 @@ async def get_section_learning_status(user_id: str, section_id: str) -> dict:
         section_prefix=section_id + "."
     )
     
-    # Also check if the section itself (e.g., "7.3") is a concept
-    section_query = """
-    MATCH (c:Concept {id: $section_id})
-    OPTIONAL MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(i:Insight {type: "TAUGHT"})-[:ABOUT]->(c)
-    WHERE i.superseded_by IS NULL
-    RETURN c.id as id,
-           c.title as title,
-           CASE WHEN i IS NOT NULL THEN true ELSE false END as explained,
-           COALESCE(i.verified, false) as verified
-    """
-    
-    section_result = await neo4j_client.execute_read(
-        section_query,
-        user_id=user_id,
-        section_id=section_id
-    )
-    
+    # Build concepts list (sub-concepts only)
     concepts = []
-    
-    # Add section itself if it exists as a concept
-    if section_result:
-        concepts.append({
-            "id": section_result[0]["id"],
-            "title": section_result[0]["title"] or section_id,
-            "explained": section_result[0]["explained"],
-            "verified": section_result[0]["verified"]
-        })
-    
-    # Add sub-concepts
     if results:
         for r in results:
             concepts.append({
@@ -731,3 +771,104 @@ async def mark_concept_verified(user_id: str, concept_id: str, is_verified: bool
         "verified": is_verified,
         "insight_updated": bool(results)
     }
+
+
+# === Sub-Concept Navigation Functions ===
+
+async def get_subconcepts_for_section(section_id: str) -> list[dict]:
+    """Get all sub-concepts for a section, ordered by ID.
+    
+    Args:
+        section_id: The section ID (e.g., "7.3")
+        
+    Returns:
+        List of sub-concept dicts with id, title, description, type
+    """
+    query = """
+    MATCH (c:Concept)
+    WHERE c.id STARTS WITH $section_prefix
+    RETURN c.id as id, c.title as title, c.description as description, c.type as type
+    ORDER BY c.id
+    """
+    
+    results = await neo4j_client.execute_read(
+        query,
+        section_prefix=section_id + "."
+    )
+    
+    return [
+        {
+            "id": r["id"],
+            "title": r["title"] or r["id"],
+            "description": r["description"] or "",
+            "type": r["type"] or "concept"
+        }
+        for r in results
+    ] if results else []
+
+
+async def get_first_unexplained_subconcept(user_id: str, section_id: str) -> dict | None:
+    """Get the first sub-concept in a section that hasn't been explained to the user.
+    
+    Args:
+        user_id: The user's ID
+        section_id: The section ID (e.g., "7.3")
+        
+    Returns:
+        First unexplained sub-concept with id, title, description, type or None if all explained
+    """
+    query = """
+    MATCH (c:Concept)
+    WHERE c.id STARTS WITH $section_prefix
+    OPTIONAL MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(i:Insight {type: "TAUGHT"})-[:ABOUT]->(c)
+    WHERE i.superseded_by IS NULL
+    WITH c, i
+    WHERE i IS NULL
+    RETURN c.id as id, c.title as title, c.description as description, c.type as type
+    ORDER BY c.id
+    LIMIT 1
+    """
+    
+    results = await neo4j_client.execute_read(
+        query,
+        user_id=user_id,
+        section_prefix=section_id + "."
+    )
+    
+    if results:
+        return {
+            "id": results[0]["id"],
+            "title": results[0]["title"] or results[0]["id"],
+            "description": results[0]["description"] or "",
+            "type": results[0]["type"] or "concept"
+        }
+    return None
+
+
+async def get_next_subconcept(user_id: str, section_id: str, current_subconcept_id: str) -> dict | None:
+    """Get the next sub-concept after the current one.
+    
+    Args:
+        user_id: The user's ID
+        section_id: The section ID
+        current_subconcept_id: The current sub-concept ID (e.g., "7.3.1")
+        
+    Returns:
+        Next sub-concept or None if at the end
+    """
+    # Get all subconcepts
+    all_subconcepts = await get_subconcepts_for_section(section_id)
+    
+    # Find current index
+    current_index = -1
+    for i, sc in enumerate(all_subconcepts):
+        if sc["id"] == current_subconcept_id:
+            current_index = i
+            break
+    
+    # Return next if exists
+    if current_index >= 0 and current_index < len(all_subconcepts) - 1:
+        return all_subconcepts[current_index + 1]
+    
+    return None
+

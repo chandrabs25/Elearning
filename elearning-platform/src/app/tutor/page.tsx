@@ -523,23 +523,27 @@ export default function TutorV2Page() {
         }
     }, [context, chatMessages, isChatTyping]);
 
-    // Check if message is a tutor command (should always go to tutor endpoint)
+    // Check if message is a tutor command (navigation, quiz, etc.)
+    // Only used when chat panel is NOT focused
     const isTutorCommand = (message: string): boolean => {
         const msg = message.toLowerCase().trim();
         const commandPrefixes = [
-            "remove", "hide", "close", "teach", "go to", "next", "previous",
+            "remove", "hide", "close", "go to", "next", "previous",
             "quiz", "mcq", "exercise", "show", "open book", "compare"
         ];
+        // "teach" removed - let the backend decide via intent classification
         return commandPrefixes.some(prefix => msg.startsWith(prefix));
     };
 
     // Unified message handler - routes to appropriate endpoint based on focus
     const handleSendMessage = useCallback((message: string) => {
-        // Tutor commands always go to tutor endpoint, even when chat is focused
-        if (isTutorCommand(message)) {
-            sendTutorMessage(message);
-        } else if (isChatFocused) {
+        // IMPORTANT: When chat panel is focused, ALL messages go to chat endpoint
+        // The chat panel is for Socratic tutoring - user messages should stay in chat context
+        if (isChatFocused) {
             sendChatMessage(message);
+        } else if (isTutorCommand(message)) {
+            // Only intercept commands when NOT in chat mode
+            sendTutorMessage(message);
         } else {
             sendTutorMessage(message);
         }
@@ -682,14 +686,24 @@ export default function TutorV2Page() {
     if (error) {
         return (
             <div className="min-h-screen bg-black flex items-center justify-center">
-                <div className="text-red-400 text-center">
-                    <p className="text-xl mb-4">Connection Failed</p>
+                <div className="text-center max-w-md px-6">
+                    <div className="text-6xl mb-4">☕</div>
+                    <p className="text-xl text-white/80 mb-2">Server is waking up...</p>
+                    <p className="text-white/50 text-sm mb-6">
+                        Our server was taking a nap to save resources. It takes a few seconds to start up.
+                        Please reload the page to continue.
+                    </p>
                     <button
-                        onClick={initSession}
-                        className="px-6 py-3 bg-red-500/20 border border-red-500/50 rounded-full hover:bg-red-500/30 transition"
+                        onClick={() => window.location.reload()}
+                        className="px-6 py-3 bg-blue-500/20 border border-blue-500/50 rounded-full hover:bg-blue-500/30 transition text-blue-400"
                     >
-                        Retry
+                        🔄 Reload Page
                     </button>
+                    <p className="text-white/30 text-xs mt-4">
+                        This is a known issue with free-tier hosting. Thank you for your patience!
+
+                        Regards Srichandra.
+                    </p>
                 </div>
             </div>
         );

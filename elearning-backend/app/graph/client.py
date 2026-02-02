@@ -83,6 +83,19 @@ class Neo4jClient:
                 record = await result.single()
                 return record.data() if record else None
         return await self._execute_with_retry(operation)
+    
+    async def execute_write(self, query: str, **params):
+        """Execute a write query with retry and proper transaction commit."""
+        async def operation():
+            async with self.driver.session() as session:
+                # Use write_transaction to ensure proper commit
+                async def tx_func(tx):
+                    result = await tx.run(query, **params)
+                    # Collect data first (if any), then consume to commit
+                    data = [record.data() async for record in result]
+                    return data
+                return await session.execute_write(tx_func)
+        return await self._execute_with_retry(operation)
 
 
 # Singleton instance

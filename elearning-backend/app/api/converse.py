@@ -13,6 +13,8 @@ from app.graph.user_state import (
     get_last_session,
     get_weak_concepts,
     update_mastery,
+    get_tutor_state,
+    save_tutor_state,
     get_section_mastery,
     get_lifetime_progress,
     record_exercise_attempt,
@@ -66,6 +68,49 @@ MASTERY_THRESHOLD = 70
 
 # Default section ID for fallbacks (first section in gravity chapter)
 DEFAULT_SECTION_ID = "7.1"
+
+
+class ClearHistoryRequest(BaseModel):
+    user_id: str
+    section_id: str
+
+
+@router.post("/clear-history")
+async def clear_history_endpoint(req: ClearHistoryRequest):
+    """Clear chat history for a user in a specific section."""
+    result = await clear_chat_history(req.user_id, req.section_id)
+    return {"success": result, "message": f"Cleared history for section {req.section_id}"}
+
+
+@router.post("/tutor/reset-progress")
+async def reset_progress_endpoint(req: ClearHistoryRequest):
+    """Reset all learning progress (TAUGHT insights) for a section.
+    
+    This removes all 'explained' and 'verified' status for sub-concepts in the section.
+    """
+    from app.graph.client import neo4j_client
+    from app.cache import cache_delete
+    
+    # Delete all TAUGHT insights for sub-concepts in this section
+    query = """
+    MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(i:Insight {type: "TAUGHT"})-[:ABOUT]->(c:Concept)
+    WHERE c.id STARTS WITH $section_prefix
+    DETACH DELETE i
+    RETURN count(*) as deleted
+    """
+    
+    results = await neo4j_client.execute_write(
+        query,
+        user_id=req.user_id,
+        section_prefix=req.section_id + "."
+    )
+    
+    deleted_count = results[0]["deleted"] if results else 0
+    
+    # Invalidate cache
+    await cache_delete(f"user_state:{req.user_id}")
+    
+    return {"success": True, "message": f"Reset progress for section {req.section_id}", "deleted_insights": deleted_count}
 
 
 def get_current_section_id(user_state: dict, fallback: str = None) -> str:
@@ -341,8 +386,25 @@ async def converse(req: ConversationRequest):
         options = context.get("options", [])
         return action in options
     
-    if req.action:
-        # First, check if this is a KNOWN deterministic action (navigation, quiz, etc.)
+    # FIRST: Check for focused panel inputs - bypass ALL action/intent parsing
+    # These inputs should NEVER trigger navigation or content changes
+    if context.get("focused_panel") == "chat" and req.message and not req.action:
+        # ChatPanel focused - route through tutor agent
+        intent = "chat_message"
+        message = req.message
+    elif context.get("focused_panel") in ("quiz", "mcq", "exercise") and context.get("input_mode") == "answer" and req.message and not req.action:
+        # Quiz/MCQ/Exercise focused in Answer mode - ALL text is treated as an answer
+        # Users should use buttons or toggle to Ask mode if they want to navigate
+        if context.get("focused_panel") == "exercise":
+            intent = "answer_exercise"
+        elif context.get("question_type") == "mcq":
+            intent = "submit_mcq_answer"
+        else:
+            intent = "submit_quiz_answer"
+        message = req.message
+        context["quiz_answer"] = req.message
+    elif req.action:
+        # Deterministic action from button click (skips LLM)
         intent, action_payload = parse_action(req.action)
         if intent:
             # Deterministic action found - use it regardless of quiz state
@@ -361,16 +423,6 @@ async def converse(req: ConversationRequest):
                 ),
                 conversation_context=context
             )
-    elif context.get("focused_panel") in ("quiz", "mcq") and context.get("input_mode") == "answer":
-        # Quiz/MCQ focused in Answer mode - ALL text is treated as an answer
-        # Users should use buttons or toggle to Ask mode if they want to navigate
-        intent = "submit_quiz_answer"
-        message = req.message
-        context["quiz_answer"] = req.message
-    elif context.get("focused_panel") == "chat":
-        # ChatPanel focused - route text through the Socratic agent
-        intent = "chat_message"  # Routes to agent for Socratic teaching
-        message = req.message
     else:
         # All other text - use LLM classifier to decide between:
         # - TOPIC: "Teach me gravity" → Show section (no RAG)
@@ -551,9 +603,25 @@ async def converse_stream(req: ConversationRequest):
 @router.get("/tutor/init/{user_id}")
 async def init_session(user_id: str):
     """Initialize a tutor session - returns welcome screen with progress."""
-    await get_or_create_user(user_id)
-    last_session = await get_last_session(user_id)
-    user_state = await get_user_state(user_id)
+    import asyncio
+    
+    # Retry logic for cold-start Neo4j connection issues
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        try:
+            await get_or_create_user(user_id)
+            last_session = await get_last_session(user_id)
+            user_state = await get_user_state(user_id)
+            break  # Success
+        except Exception as e:
+            if attempt < max_retries:
+                print(f"[Init] Retry {attempt + 1}/{max_retries} after error: {e}")
+                await asyncio.sleep(0.5)  # Brief pause before retry
+            else:
+                # Final attempt failed, use defaults
+                print(f"[Init] All retries failed, using defaults: {e}")
+                last_session = None
+                user_state = None
     
     # Get last section info for continue button
     last_section = None
@@ -656,9 +724,12 @@ async def get_progress(user_id: str):
 
 
 
+from typing import Any
+
+
 class ChatMessage(BaseModel):
     role: str  
-    content: list | str  # Can be string or list of content items
+    content: Any  # Can be string, list, or any type (frontend may send unexpected data)
 
 
 class ChatPanelRequest(BaseModel):
@@ -683,7 +754,7 @@ async def chat_panel_message(req: ChatPanelRequest):
     from app.agents.tutor_agent import tutor_agent, TutorState
     from langchain_core.messages import HumanMessage, AIMessage
     
-    section_id = req.context.get("current_section_id")
+    section_id = req.context.get("current_section")
     section_title = req.context.get("current_section_title", "Gravitation")
     
     # Record chat interaction for mastery tracking
@@ -724,6 +795,44 @@ async def chat_panel_message(req: ChatPanelRequest):
                 content = format_content_for_ui(section_data)
                 rag_content = f"Current Section: {section_title}\n\n{content}"
     
+    # Initialize subconcept tracking
+    from app.graph.user_state import get_first_unexplained_subconcept, get_subconcepts_for_section, get_section_learning_status
+    
+    first_subconcept = None
+    first_subconcept_title = None
+    total_subconcepts = 0
+    explained_count = 0
+    
+    if section_id and req.user_id:
+        try:
+            # Get section learning status for accurate counts
+            section_status = await get_section_learning_status(req.user_id, section_id)
+            total_subconcepts = section_status.get("total_count", 0)
+            explained_count = section_status.get("explained_count", 0)
+            
+            # Get first unexplained subconcept to start teaching from
+            unexplained = await get_first_unexplained_subconcept(req.user_id, section_id)
+            if unexplained:
+                first_subconcept = unexplained["id"]
+                first_subconcept_title = unexplained["title"]
+            else:
+                # All subconcepts explained, use first one for reference
+                all_subconcepts = await get_subconcepts_for_section(section_id)
+                if all_subconcepts:
+                    first_subconcept = all_subconcepts[0]["id"]
+                    first_subconcept_title = all_subconcepts[0]["title"]
+            
+            print(f"[Subconcept Init] section={section_id}, first={first_subconcept}, explained={explained_count}/{total_subconcepts}")
+        except Exception as e:
+            print(f"[Subconcept Init] Error: {e}")
+
+    
+    # Load persisted tutor state (mode, prereq info) from previous request
+    persisted_tutor_state = await get_tutor_state(req.user_id)
+    persisted_mode = persisted_tutor_state.get("mode", "normal")
+    persisted_prereq_chain = persisted_tutor_state.get("prerequisite_chain", [])
+    print(f"[Tutor State] Loaded: mode={persisted_mode}, prereq_chain={persisted_prereq_chain}")
+    
     # Build initial state for LangGraph agent
     initial_state: TutorState = {
         "messages": history_messages,
@@ -733,19 +842,32 @@ async def chat_panel_message(req: ChatPanelRequest):
         "concept_content": rag_content,  # Pre-populated from RAG if available
         "prerequisites": [],
         "insights": [],  # Will be populated by retrieve_context
+        
+        # Sub-concept progressive teaching - NOW INITIALIZED
+        "current_subconcept_id": first_subconcept,
+        "current_subconcept_title": first_subconcept_title,
+        "total_subconcepts": total_subconcepts,
+        "explained_subconcept_count": explained_count,
+        
         "active_misconceptions": [],  # Will be populated by analyze_student_context
         "active_competencies": [],
         "risk_concepts": [],
-        "mode": "normal",
-        "current_prereq_id": None,
-        "current_prereq_title": None,
-        "prereq_question": None,
-        "prerequisite_chain": [],
+        # Use persisted tutor state instead of always resetting to normal
+        "mode": persisted_mode,
+        "current_prereq_id": persisted_tutor_state.get("current_prereq_id"),
+        "current_prereq_title": persisted_tutor_state.get("current_prereq_title"),
+        "prereq_question": persisted_tutor_state.get("prereq_question"),
+        "prerequisite_chain": persisted_prereq_chain,
         "prereq_answer_correct": False,
         "max_depth": 3,
         "main_concept_id": None,  # Preserved when going deeper into prereqs
-        "main_concept_title": None
+        "main_concept_title": None,
+        # Verification state
+        "pending_verification_concept": persisted_tutor_state.get("pending_verification_concept"),
+        "pending_verification_title": None,
+        "verification_question": None
     }
+
     
     try:
         # Build config with thread_id for checkpointer
@@ -754,6 +876,10 @@ async def chat_panel_message(req: ChatPanelRequest):
         
         # Run the LangGraph agent
         final_state = await tutor_agent.ainvoke(initial_state, config=config)
+        
+        # Persist tutor state (mode, prereq info) for next request
+        await save_tutor_state(req.user_id, final_state)
+        print(f"[Tutor State] Saved: mode={final_state.get('mode')}, prereq_chain={final_state.get('prerequisite_chain')}")
         
         # Extract the last AI message
         ai_messages = [m for m in final_state.get("messages", []) if isinstance(m, AIMessage)]
@@ -866,7 +992,80 @@ async def delete_section_chat_history(user_id: str, section_id: str):
 def parse_response_to_content(text: str) -> list:
     """Parse LLM response into structured content items with LaTeX support."""
     import re
+    import ast
+    import json
     
+    stripped = text.strip()
+    
+    # Check if the LLM returned structured content directly (Python dict/list format)
+    # This handles the case where LLM returns: [{'type': 'text', 'text': '...'}]
+    if stripped.startswith("[{") or stripped.startswith("[{'"):
+        try:
+            # Try Python literal eval first (handles single quotes and mixed quotes)
+            parsed = ast.literal_eval(stripped)
+            if isinstance(parsed, list) and all(isinstance(item, dict) for item in parsed):
+                valid_items = []
+                for item in parsed:
+                    if "type" in item:
+                        valid_items.append(item)
+                    elif "text" in item:
+                        valid_items.append({"type": "text", "text": item["text"]})
+                if valid_items:
+                    return valid_items
+        except (ValueError, SyntaxError):
+            pass
+        
+        # Try JSON parsing (handles double quotes)
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                valid_items = []
+                for item in parsed:
+                    if isinstance(item, dict) and "type" in item:
+                        valid_items.append(item)
+                if valid_items:
+                    return valid_items
+        except json.JSONDecodeError:
+            pass
+    
+    # Handle multi-line Python list format where each line is: [{'type': 'text', 'text': '...'}],
+    # Common pattern when LLM outputs structured data line by line
+    lines = stripped.split('\n')
+    if any(line.strip().startswith("[{") for line in lines):
+        items = []
+        for line in lines:
+            line = line.strip()
+            # Remove trailing comma if present
+            if line.endswith('],'):
+                line = line[:-1]  # Remove the trailing comma
+            elif line.endswith(']'):
+                pass  # Already good
+            else:
+                # Not a list line, treat as text if non-empty
+                if line:
+                    items.append({"type": "text", "text": line})
+                continue
+            
+            # Try to parse the line as a Python list
+            if line.startswith("[{"):
+                try:
+                    parsed = ast.literal_eval(line)
+                    if isinstance(parsed, list):
+                        for item in parsed:
+                            if isinstance(item, dict):
+                                if "type" in item:
+                                    items.append(item)
+                                elif "text" in item:
+                                    items.append({"type": "text", "text": item["text"]})
+                except (ValueError, SyntaxError):
+                    # If parsing fails, add as text
+                    if line:
+                        items.append({"type": "text", "text": line})
+        
+        if items:
+            return items
+    
+    # Fallback: Standard text parsing with LaTeX support
     items = []
     
     # Split by block equations ($$...$$)
@@ -1076,7 +1275,7 @@ async def handle_derivation(user_id: str, message: str, user_state: dict, contex
                     "animation": "fadeIn"
                 }]
             ),
-            conversation_context={"showing_derivation": True, "section_id": current_id, "step_by_step": step_by_step}
+            conversation_context={"showing_derivation": True, "current_section": current_id, "step_by_step": step_by_step}
         )
     
     return await handle_start_topic(user_id, message, context)
@@ -1589,7 +1788,7 @@ async def handle_show_exercises(user_id: str, message: str, user_state: dict, co
         ),
         conversation_context={
             "viewing_exercises": True,
-            "section_id": section_id,
+            "current_section": section_id,
             "expecting_exercise_answer": True
         }
     )
@@ -1600,7 +1799,7 @@ async def handle_exercise_answer(user_id: str, answer: str, context: dict) -> Co
     from app.agents.tutor_agent import evaluate_quiz_answer
     
     exercise_label = context.get("exercise_label")
-    section_id = context.get("section_id", DEFAULT_SECTION_ID)
+    section_id = context.get("current_section", DEFAULT_SECTION_ID)
     exercise_question = context.get("exercise_question", "")
     is_bonus = context.get("is_bonus", True)
     
@@ -2284,14 +2483,14 @@ async def handle_agent_chat(user_id: str, message: str, user_state: dict, contex
                     "title": current_section["section_title"],
                     "content": section_content,
                     "animated": False,
-                    "section_id": current_id
+                    "current_section": current_id
                 },
                 role="primary"
             )
         )
     
     chat_context = {
-        "current_section_id": current_id,
+        "current_section": current_id,
         "current_section_title": current_section["section_title"] if current_section else None,
         "user_id": user_id,
         "agent_mode": agent_mode
@@ -2381,14 +2580,14 @@ async def handle_open_chat(user_id: str, user_state: dict, context: dict) -> Con
                     "title": current_section["section_title"],
                     "content": section_content,
                     "animated": False,
-                    "section_id": current_id
+                    "current_section": current_id
                 },
                 role="primary"
             )
         )
     
     chat_context = {
-        "current_section_id": current_id,
+        "current_section": current_id,
         "current_section_title": current_section["section_title"] if current_section else None,
         "user_id": user_id
     }
@@ -2400,9 +2599,16 @@ async def handle_open_chat(user_id: str, user_state: dict, context: dict) -> Con
         initial_message=None  # No initial message - just open the panel
     )
     
+    # Merge current_section into context so frontend can fetch history
+    updated_context = {
+        **context,
+        "current_section": current_id,
+        "section_title": current_section["section_title"] if current_section else None,
+    }
+    
     return ConversationResponse(
         ui=ui,
-        conversation_context=context
+        conversation_context=updated_context
     )
 
 

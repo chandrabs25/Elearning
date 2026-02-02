@@ -47,7 +47,7 @@ async def save_chat_message(
     RETURN m.id as id, m.role as role, m.content as content, m.timestamp as timestamp
     """
     
-    results = await neo4j_client.execute_read(
+    results = await neo4j_client.execute_write(
         query,
         user_id=user_id,
         section_id=section_id,
@@ -107,14 +107,62 @@ async def get_chat_history(
     )
     
     import json
+    import ast
+    
+    def flatten_nested_content(content):
+        """
+        Fix content that has text values containing nested Python list strings.
+        e.g., [{"type": "text", "text": "[{'type': 'text', 'text': 'Hello'}]"}]
+        should become [{"type": "text", "text": "Hello"}]
+        """
+        if not isinstance(content, list):
+            return content
+        
+        flattened = []
+        for item in content:
+            if not isinstance(item, dict):
+                flattened.append(item)
+                continue
+            
+            # Check if text value contains a nested Python list
+            if item.get("type") == "text" and isinstance(item.get("text"), str):
+                text_val = item["text"].strip()
+                # Detect nested Python list format
+                if text_val.startswith("[{") or text_val.startswith("[{'"):
+                    try:
+                        # Try to parse as Python literal
+                        parsed = ast.literal_eval(text_val.rstrip(","))  # Remove trailing comma
+                        if isinstance(parsed, list):
+                            # Add all items from the nested list
+                            for nested_item in parsed:
+                                if isinstance(nested_item, dict):
+                                    flattened.append(nested_item)
+                            continue
+                    except (ValueError, SyntaxError):
+                        pass
+            
+            # Not nested, keep as-is
+            flattened.append(item)
+        
+        return flattened
+    
     messages = []
     for row in reversed(results):  # Reverse to get oldest first
         content = row["content"]
         # Try to parse JSON content (for list-based content)
-        try:
-            content = json.loads(content)
-        except (json.JSONDecodeError, TypeError):
-            pass
+        if isinstance(content, str) and content.strip().startswith("["):
+            try:
+                content = json.loads(content)
+            except (json.JSONDecodeError, TypeError):
+                # Fallback: try Python literal eval for mixed-quote content
+                try:
+                    content = ast.literal_eval(content)
+                except (ValueError, SyntaxError):
+                    pass  # Keep as string if all parsing fails
+        
+        # Flatten any nested content
+        if isinstance(content, list):
+            content = flatten_nested_content(content)
         
         messages.append({
             "id": row["id"],
@@ -146,7 +194,7 @@ async def clear_chat_history(user_id: str, section_id: str) -> bool:
     RETURN count(*) as deleted
     """
     
-    await neo4j_client.execute_read(
+    await neo4j_client.execute_write(
         query,
         user_id=user_id,
         section_id=section_id
