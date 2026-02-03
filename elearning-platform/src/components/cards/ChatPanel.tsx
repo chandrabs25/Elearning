@@ -185,6 +185,18 @@ export default function ChatPanel({
         }
     }, [context?.current_section, context?.user_id]);
 
+    // Refresh section status when messages change (e.g., after tutor teaches a concept)
+    useEffect(() => {
+        if (context?.current_section && context?.user_id && messages.length > 0) {
+            // Debounce: only fetch after message is fully received
+            const timer = setTimeout(() => {
+                fetchSectionStatus();
+            }, 500);
+            return () => clearTimeout(timer);
+        }
+    }, [messages.length, context?.current_section, context?.user_id]);
+
+
     const fetchSectionStatus = async () => {
         if (!context?.current_section || !context?.user_id) return;
 

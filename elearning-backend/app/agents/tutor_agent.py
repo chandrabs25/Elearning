@@ -928,68 +928,13 @@ Subconcept: {subconcept_title}
                         else:
                             response_text += f"\n\n✅ **Section complete!** You've mastered all concepts. Ready for the next section?"
                     else:
-                        # Per-subsection verification: check understanding before moving to next
-                        current_sc = state.get("current_subconcept_id")
-                        current_sc_title = state.get("current_subconcept_title", "this concept")
-                        
-                        if current_sc:
-                            # Check if current subconcept is already verified
-                            current_verified = False
-                            for c in section_status.get("concepts", []):
-                                if c["id"] == current_sc:
-                                    current_verified = c.get("verified", False)
-                                    break
-                            
-                            if not current_verified:
-                                # Generate verification question for current subconcept
-                                # ChatGroq is already imported at top of file
-                                from app.config import settings
-                                
-                                llm = ChatGroq(
-                                    model="llama-3.3-70b-versatile",
-                                    temperature=0.5,
-                                    api_key=settings.groq_api_key
-                                )
-                                
-                                # Get description for this subconcept
-                                current_sc_desc = state.get("current_subconcept_description", "")
-                                
-                                verification_prompt = f"""Generate a simple, friendly question to check if a student understood a physics concept.
+                        # Not all concepts explained yet - show progress and remind about button
+                        response_text += progress_text
+                        # Remind user about the verification button
+                        unverified_count = explained_count - section_status.get("verified_count", 0)
+                        if unverified_count > 0:
+                            response_text += f"\n\n💡 *When you're ready, click the 'Check Understanding' button to verify!*"
 
-**Concept:** {current_sc_title}
-{f"**Description:** {current_sc_desc}" if current_sc_desc else ""}
-
-The question should:
-- Test understanding of the core idea, not memorization of formulas
-- Be answerable in 1-2 sentences
-- Be encouraging in tone
-- Be specific to this concept
-
-Respond with ONLY the question, nothing else."""
-
-                                q_response = await llm.ainvoke([HM(content=verification_prompt)])
-                                verification_q = q_response.content.strip()
-                                
-                                # Update state for verification mode
-                                state["mode"] = "awaiting_subsection_verification"
-                                state["pending_verification_concept"] = current_sc
-                                state["pending_verification_title"] = current_sc_title
-                                state["pending_verification_description"] = current_sc_desc
-                                state["verification_question"] = verification_q
-                                
-                                response_text += f"{progress_text}\n\n🧠 **Quick Check:** {verification_q}"
-                            else:
-                                # Already verified, move to next
-                                next_sc = await get_next_subconcept(user_id, section_id, current_sc)
-                                if next_sc:
-                                    response_text += f"{progress_text}\n\n👉 **Next:** *{next_sc['title'][:50]}...*"
-                                    state["current_subconcept_id"] = next_sc["id"]
-                                    state["current_subconcept_title"] = next_sc["title"]
-                                    state["current_subconcept_description"] = next_sc.get("description", "")
-                                else:
-                                    response_text += progress_text
-                        else:
-                            response_text += progress_text
         except Exception as e:
             print(f"[Tracking] Error marking concept explained: {e}")
     
@@ -998,189 +943,131 @@ Respond with ONLY the question, nothing else."""
     return state
 
 
-async def evaluate_subsection_verification(state: TutorState) -> TutorState:
-    """Evaluate the student's answer to a subsection verification question."""
-    from app.config import settings
-    from app.graph.user_state import mark_concept_verified, get_next_subconcept, get_section_learning_status
-    
-    llm = ChatGroq(
-        model="llama-3.3-70b-versatile",
-        temperature=0.3,
-        api_key=settings.groq_api_key
-    )
-    
-    # Get student's answer from most recent message
-    messages = state.get("messages", [])
-    student_answer = ""
-    for msg in reversed(messages):
-        if isinstance(msg, HumanMessage):
-            student_answer = msg.content
-            break
-    
-    # Get verification context
-    concept_id = state.get("pending_verification_concept")
-    concept_title = state.get("pending_verification_title", "this concept")
-    concept_description = state.get("pending_verification_description", "")
-    question = state.get("verification_question", "")
-    section_id = state.get("current_concept_id")
-    user_id = state.get("user_id")
-    
-    # Evaluate the answer with full context
-    eval_prompt = f"""Evaluate if this student's answer demonstrates understanding of a physics concept.
-
-**Concept:** {concept_title}
-{f"**Description:** {concept_description}" if concept_description else ""}
-
-**Question asked:** {question}
-**Student's answer:** {student_answer}
-
-Does the answer show the student understands the key idea behind this concept? 
-Be lenient - we're checking for conceptual understanding, not perfection or exact phrasing.
-
-Respond in this exact format:
-VERDICT: [PASS or FAIL]
-FEEDBACK: [Brief, encouraging feedback - 1-2 sentences max]"""
-
-    response = await llm.ainvoke([HumanMessage(content=eval_prompt)])
-    eval_text = response.content
-    
-    is_correct = "VERDICT: PASS" in eval_text.upper() or "VERDICT:PASS" in eval_text.upper()
-    feedback = eval_text.split("FEEDBACK:")[-1].strip() if "FEEDBACK:" in eval_text else eval_text
-    
-    if is_correct:
-        # Mark as verified
-        if user_id and concept_id:
-            await mark_concept_verified(user_id, concept_id, True)
-        
-        # Get next subconcept
-        next_sc = None
-        if section_id and concept_id:
-            next_sc = await get_next_subconcept(user_id, section_id, concept_id)
-        
-        if next_sc:
-            response_text = f"✅ **Great job!** {feedback}\n\n👉 **Next up:** *{next_sc['title'][:50]}...*\n\nType 'continue' or ask a question about the next topic!"
-            state["current_subconcept_id"] = next_sc["id"]
-            state["current_subconcept_title"] = next_sc["title"]
-            state["current_subconcept_description"] = next_sc.get("description", "")
-        else:
-            # Check if all verified
-            status = await get_section_learning_status(user_id, section_id)
-            if status.get("all_verified"):
-                response_text = f"✅ **Excellent!** {feedback}\n\n🎉 **Section Complete!** You've mastered all concepts in this section. Ready for the next section?"
-            else:
-                response_text = f"✅ **Great job!** {feedback}\n\n📊 Section progress updated!"
-        
-        # Clear verification state and return to normal
-        state["mode"] = "normal"
-        state["pending_verification_concept"] = None
-        state["pending_verification_title"] = None
-        state["pending_verification_description"] = None
-        state["verification_question"] = None
-    else:
-        # Wrong answer - stay in verification mode for retry
-        response_text = f"🤔 **Not quite!** {feedback}\n\n💡 **Hint:** Think about the key points we covered about *{concept_title}*.\n\nTry again, or type 'explain' if you'd like me to clarify!"
-        # Keep mode as awaiting_subsection_verification for retry
-    
-    state["messages"] = state.get("messages", []) + [AIMessage(content=response_text)]
-    return state
-
 
 async def continue_topic(state: TutorState) -> TutorState:
-    """User knows prerequisites - continue with the main topic.
+    """User knows prerequisites - teach the CURRENT SUBCONCEPT only.
     
-    Also checks for per-subsection verification before moving to next subsection.
+    This function:
+    1. Teaches ONE subconcept using a strict prompt
+    2. Marks the subconcept as explained
+    3. Returns with mode = 'normal'
+    
+    Verification is triggered by the UI's 'Check Understanding' button,
+    not by the agent. See /api/tutor/check-understanding and /api/tutor/verify-understanding.
     """
     from app.config import settings
-    from app.graph.user_state import get_section_learning_status, get_next_subconcept
+    from app.graph.user_state import (
+        mark_concept_explained, 
+        get_section_learning_status, 
+        get_next_subconcept,
+        get_subconcepts_for_section
+    )
     
     user_id = state.get("user_id")
     section_id = state.get("current_concept_id")
+    section_title = state.get("current_concept_title", "this section")
     current_sc = state.get("current_subconcept_id")
-    current_sc_title = state.get("current_subconcept_title", "this concept")
+    current_sc_title = state.get("current_subconcept_title", "the first concept")
+    current_sc_desc = state.get("current_subconcept_description", "")
     
-    # Check if current subsection needs verification before proceeding
-    if user_id and section_id and current_sc:
-        section_status = await get_section_learning_status(user_id, section_id)
-        
-        # Check if current subconcept is explained but NOT verified
-        current_explained = False
-        current_verified = False
-        for c in section_status.get("concepts", []):
-            if c["id"] == current_sc:
-                current_explained = c.get("explained", False)
-                current_verified = c.get("verified", False)
-                break
-        
-        # If explained but not verified, ask verification question
-        if current_explained and not current_verified:
-            llm = ChatGroq(
-                model="llama-3.3-70b-versatile",
-                temperature=0.5,
-                api_key=settings.groq_api_key
-            )
-            
-            verification_prompt = f"""Generate a simple, friendly question to check if a student understood: "{current_sc_title}".
-
-The question should:
-- Test understanding, not memorization  
-- Be answerable in 1-2 sentences
-- Be encouraging in tone
-
-Respond with ONLY the question, nothing else."""
-
-            q_response = await llm.ainvoke([HumanMessage(content=verification_prompt)])
-            verification_q = q_response.content.strip()
-            
-            # Set verification mode
-            state["mode"] = "awaiting_subsection_verification"
-            state["pending_verification_concept"] = current_sc
-            state["pending_verification_title"] = current_sc_title
-            state["verification_question"] = verification_q
-            
-            response_text = f"Before we move on, let me check your understanding of **{current_sc_title}**.\n\n🧠 **Quick Check:** {verification_q}"
-            state["messages"] = state.get("messages", []) + [AIMessage(content=response_text)]
-            return state
+    # If no subconcept set, get the first one
+    if not current_sc and section_id:
+        try:
+            all_subconcepts = await get_subconcepts_for_section(section_id)
+            if all_subconcepts:
+                current_sc = all_subconcepts[0]["id"]
+                current_sc_title = all_subconcepts[0]["title"]
+                current_sc_desc = all_subconcepts[0].get("description", "")
+                state["current_subconcept_id"] = current_sc
+                state["current_subconcept_title"] = current_sc_title
+                state["current_subconcept_description"] = current_sc_desc
+        except Exception as e:
+            print(f"[continue_topic] Error getting subconcepts: {e}")
     
-    # Normal continue flow - proceed with main topic
+    # Truncate content to reduce noise
+    section_content = state.get('concept_content', '')[:1500]
+    
     llm = ChatGroq(
         model="llama-3.3-70b-versatile",
         temperature=0.5,
         api_key=settings.groq_api_key
     )
     
-    # Get mastery-based suggestion
-    suggestion = await get_mastery_suggestion(
-        state.get("user_id"), 
-        state.get("current_concept_id")
-    )
-    
-    system_prompt = f"""You are an AI physics tutor. The student has confirmed they understand the prerequisites for:
-**{state.get('current_concept_title', 'Gravitation')}**
+    # STRICT subconcept-focused prompt
+    system_prompt = f"""You are an AI physics tutor. The student confirmed they understand prerequisites.
 
-Textbook content:
+═══════════════════════════════════════════════════════════════
+TEACHING TARGET: "{current_sc_title}" (Sub-concept {current_sc})
+═══════════════════════════════════════════════════════════════
+
+**SECTION:** {section_title}
+**SUBCONCEPT:** {current_sc_title}
+{f"**DESCRIPTION:** {current_sc_desc}" if current_sc_desc else ""}
+
+Reference material (for context ONLY):
 ---
-{state.get('concept_content', '')[:2000]}
+{section_content}
 ---
 
-Guidelines:
-1. Briefly acknowledge their knowledge of the prerequisites (e.g. "Great! Since you're familiar with that...")
-2. Now dive deeper into the current topic, building upon those prerequisites.
-3. Explain the core concepts clearly using the textbook content.
-4. Use LaTeX for equations ($$...$$).
-5. Suggest next steps based on their progress.{suggestion}
+═══════════ CRITICAL RULES ═══════════
+1. ONLY explain "{current_sc_title}" - nothing else
+2. Keep explanation to 2-3 short paragraphs maximum
+3. Start with: "Great! Let's begin with **{current_sc_title}**."
+4. Use LaTeX for equations: $$equation$$
+5. Do NOT explain other topics or laws
+6. Do NOT ask follow-up questions - just explain the concept
+7. End your explanation naturally (I will add a verification question)
+
+FORBIDDEN: Do not teach the entire section. Focus ONLY on this single sub-concept.
 """
     
     messages_for_llm = [SystemMessage(content=system_prompt)]
-    # Retrieve recent context but skip the system prompt setup from before
-    for msg in state.get("messages", [])[-3:]:
-        if isinstance(msg, (HumanMessage, AIMessage)):
+    # Add minimal context
+    for msg in state.get("messages", [])[-2:]:
+        if isinstance(msg, HumanMessage):
             messages_for_llm.append(msg)
-            
-    response = await llm.ainvoke(messages_for_llm)
     
+    response = await llm.ainvoke(messages_for_llm)
+    response_text = response.content
+    
+    # Mark subconcept as explained
+    if user_id and current_sc:
+        try:
+            await mark_concept_explained(user_id, current_sc)
+            print(f"[continue_topic] Marked {current_sc} as explained for {user_id}")
+            
+            # Also mark parent section
+            if section_id and section_id != current_sc:
+                await mark_concept_explained(user_id, section_id)
+        except Exception as e:
+            print(f"[continue_topic] Error marking explained: {e}")
+    
+    # Get progress info and add helpful message about verification button
+    progress_text = ""
+    if user_id and section_id:
+        try:
+            section_status = await get_section_learning_status(user_id, section_id)
+            explained_count = section_status.get("explained_count", 0)
+            total_count = section_status.get("total_count", 0)
+            if total_count > 0:
+                progress_text = f"\n\n📊 **Progress:** {explained_count}/{total_count} concepts covered"
+                # Remind about the verification button
+                if explained_count > 0 and not section_status.get("all_verified"):
+                    progress_text += "\n\n💡 *When you're ready, click the 'Check Understanding' button to verify!*"
+        except Exception as e:
+            print(f"[continue_topic] Error getting status: {e}")
+    
+    # Append progress to response
+    response_text += progress_text
+    
+    # Set mode to normal - verification happens via UI button, not inline
     state["mode"] = "normal"
-    state["messages"] = state.get("messages", []) + [AIMessage(content=response.content)]
+    
+    state["messages"] = state.get("messages", []) + [AIMessage(content=response_text)]
     return state
+
+
+
 
 
 async def explain_prereqs(state: TutorState) -> TutorState:
@@ -1273,8 +1160,6 @@ def route_after_understand(state: TutorState) -> Literal["ask_prereq_question", 
         return "explain_prereqs"
     elif mode == "off_topic":
         return "answer_off_topic"
-    elif mode == "awaiting_subsection_verification":
-        return "evaluate_subsection_verification"
     else:
         # Context-aware routing: check if any prerequisite is risky
         risk_concepts = set(state.get("risk_concepts", []))
@@ -1344,7 +1229,6 @@ def build_tutor_graph() -> StateGraph:
     graph.add_node("continue_topic", continue_topic)
     graph.add_node("explain_prereqs", explain_prereqs)
     graph.add_node("answer_off_topic", answer_off_topic)  # Off-topic question handling
-    graph.add_node("evaluate_subsection_verification", evaluate_subsection_verification)  # Per-subsection verification
     
     # Set entry point
     graph.set_entry_point("retrieve")
@@ -1363,8 +1247,7 @@ def build_tutor_graph() -> StateGraph:
             "answer": "answer",
             "continue_topic": "continue_topic",
             "explain_prereqs": "explain_prereqs",
-            "answer_off_topic": "answer_off_topic",
-            "evaluate_subsection_verification": "evaluate_subsection_verification"
+            "answer_off_topic": "answer_off_topic"
         }
     )
     
@@ -1399,7 +1282,6 @@ def build_tutor_graph() -> StateGraph:
     # Normal answer flow
     graph.add_edge("answer", END)
     graph.add_edge("continue_topic", END)
-    graph.add_edge("evaluate_subsection_verification", END)
     
     # Explanation flow - waits for user feedback
     graph.add_edge("explain_prereqs", END)

@@ -649,8 +649,8 @@ async def init_session(user_id: str):
     section_ids = [item["id"] for item in toc if not item["id"].startswith("SUMMARY") and item["id"] != "Points to ponder" and item["id"] != "Exercises"]
     progress_data = await get_lifetime_progress(user_id, section_ids)
     
-    # DEMO DEFAULT: Set demo progress for sections 7.1 and 7.2 if no real progress
-    demo_sections_progress = []
+    # Build sections progress from real data
+    sections_progress = []
     for item in toc:
         if item["id"].startswith("SUMMARY") or item["id"] == "Points to ponder" or item["id"] == "Exercises":
             continue
@@ -658,33 +658,19 @@ async def init_session(user_id: str):
         real_mastery = next((s["mastery"] for s in progress_data.get("sections_progress", []) if s["id"] == item["id"]), 0)
         real_completed = next((s["completed"] for s in progress_data.get("sections_progress", []) if s["id"] == item["id"]), False)
         
-        # Demo defaults: 7.1 and 7.2 are completed with high mastery
-        if real_mastery == 0 and item["id"] in ["7.1", "7.2"]:
-            demo_sections_progress.append({
-                "id": item["id"],
-                "title": item["title"],
-                "mastery": 85 if item["id"] == "7.1" else 78,
-                "completed": True
-            })
-        else:
-            demo_sections_progress.append({
-                "id": item["id"],
-                "title": item["title"],
-                "mastery": real_mastery,
-                "completed": real_completed
-            })
+        sections_progress.append({
+            "id": item["id"],
+            "title": item["title"],
+            "mastery": real_mastery,
+            "completed": real_completed
+        })
     
     ui = welcome_schema(last_section=last_section)
     
-    # Calculate demo lifetime mastery
-    total_mastery = sum(s["mastery"] for s in demo_sections_progress)
-    num_sections = len(demo_sections_progress)
-    demo_lifetime = total_mastery // num_sections if num_sections > 0 else 0
-    
     # Add progress to UI
     ui.progress = ProgressData(
-        lifetime_mastery=demo_lifetime if progress_data.get("lifetime_mastery", 0) == 0 else progress_data.get("lifetime_mastery", 0),
-        sections_progress=demo_sections_progress
+        lifetime_mastery=progress_data.get("lifetime_mastery", 0),
+        sections_progress=sections_progress
     )
     
     return ConversationResponse(
