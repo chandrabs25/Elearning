@@ -1,230 +1,236 @@
 [
   {
-    "title": "Galileo and Terrestrial Acceleration",
-    "description": "This concept covers Galileo's groundbreaking recognition that all objects accelerate towards Earth with a constant acceleration regardless of their mass.",
+    "title": "Constant Acceleration of Falling Bodies",
+    "description": "Covers Galileo's discovery that all bodies, regardless of their mass, accelerate towards the Earth with a constant acceleration.",
     "id": "7.1.1",
     "parent_section_id": "7.1"
   },
   {
-    "title": "Evolution of Planetary Models",
-    "description": "This concept explores the historical progression from geocentric models, like Ptolemy's, to heliocentric models proposed by Aryabhatta and Copernicus, which Galileo supported.",
+    "title": "Kepler's Laws",
+    "description": "Introduces the three elegant laws derived by Johannes Kepler that describe the motion of planets.",
     "id": "7.1.2",
     "parent_section_id": "7.1"
   },
   {
-    "title": "Kepler's Laws from Astronomical Data",
-    "description": "This concept details how Tycho Brahe's meticulous planetary observations enabled Johannes Kepler to formulate his three laws of planetary motion.",
+    "title": "Newton's Universal Law of Gravitation",
+    "description": "Presents the foundational law proposed by Newton explaining the universal attraction between all massive objects.",
     "id": "7.1.3",
     "parent_section_id": "7.1"
   },
   {
-    "title": "Ellipse Construction Method",
-    "description": "Describes how to draw an ellipse using the string and pin method, resulting in a closed curve.",
+    "title": "Law of Orbits",
+    "description": "All planets move in elliptical orbits with the Sun situated at one of the foci of the ellipse.",
     "id": "7.2.1",
     "parent_section_id": "7.2"
   },
   {
-    "title": "Ellipse Foci and Constant Sum Property",
-    "description": "Defines the foci of an ellipse and the fundamental property that the sum of distances from foci to any point on the ellipse is constant.",
+    "title": "Law of Areas",
+    "description": "The line that joins any planet to the sun sweeps equal areas in equal intervals of time.",
     "id": "7.2.2",
     "parent_section_id": "7.2"
   },
   {
-    "title": "Ellipse Geometric Elements",
-    "description": "Explains key geometric features of an ellipse, including its center and semi-major axis.",
+    "title": "Law of Periods",
+    "description": "The square of the time period of revolution of a planet is proportional to the cube of the semi-major axis of the ellipse traced out by the planet.",
     "id": "7.2.3",
     "parent_section_id": "7.2"
   },
   {
-    "title": "Circle as a Special Ellipse",
-    "description": "Illustrates how a circle is a specific case of an ellipse where the two foci merge into one point.",
-    "id": "7.2.4",
-    "parent_section_id": "7.2"
-  },
-  {
-    "title": "Empirical Basis for Inverse Square Gravity",
-    "description": "This concept explains how the centripetal acceleration of the moon and terrestrial gravity 'g' provide observational evidence for the inverse square dependence of gravitational force.",
+    "title": "Universal Law of Gravitation",
+    "description": "Every body in the universe attracts every other body with a force directly proportional to the product of their masses and inversely proportional to the square of the distance between them, mathematically expressed as F = G * m1 * m2 / r^2.",
     "id": "7.3.1",
     "parent_section_id": "7.3"
   },
   {
-    "title": "Newton's Universal Law: Scalar Formulation",
-    "description": "This concept defines Newton's Universal Law of Gravitation, stating that the attractive force between two point masses is directly proportional to their product and inversely proportional to the square of their distance.",
+    "title": "Newton's Third Law of Motion (for Gravity)",
+    "description": "Gravitational forces between two bodies are equal in magnitude and opposite in direction, meaning the force on body 1 due to body 2 is equal and opposite to the force on body 2 due to body 1 (F\u2081\u2082 = -F\u2082\u2081).",
     "id": "7.3.2",
     "parent_section_id": "7.3"
   },
   {
-    "title": "Vector Form and Newton's Third Law for Gravity",
-    "description": "This concept details the vector representation of the gravitational force, emphasizing its attractive nature and its adherence to Newton's third law of action-reaction.",
+    "title": "Principle of Superposition for Gravitational Forces",
+    "description": "The total gravitational force on any body due to a collection of other bodies is the vector sum of the gravitational forces exerted individually by each of the other bodies.",
     "id": "7.3.3",
     "parent_section_id": "7.3"
   },
   {
-    "title": "Gravitational Force with Extended Objects",
-    "description": "This concept addresses how to calculate the gravitational force between extended objects, explaining the need for vector summation of forces from all constituent point masses.",
+    "title": "Gravitational Force of a Spherical Shell (External Point)",
+    "description": "The force of attraction between a hollow spherical shell of uniform density and a point mass situated outside is as if the entire mass of the shell is concentrated at its center.",
     "id": "7.3.4",
     "parent_section_id": "7.3"
   },
   {
-    "title": "Purpose of the Cavendish Experiment",
-    "description": "This concept covers the primary objective of the Cavendish experiment, which is to experimentally determine the value of the gravitational constant G.",
+    "title": "Gravitational Force of a Spherical Shell (Internal Point)",
+    "description": "The force of attraction due to a hollow spherical shell of uniform density on a point mass situated inside it is zero.",
+    "id": "7.3.5",
+    "parent_section_id": "7.3"
+  },
+  {
+    "title": "Universal Law of Gravitation",
+    "description": "This fundamental law describes the attractive force between any two objects with mass, proportional to their masses and inversely proportional to the square of the distance between their centers, involving the gravitational constant G.",
     "id": "7.4.1",
     "parent_section_id": "7.4"
   },
   {
-    "title": "Cavendish Torsion Balance Apparatus",
-    "description": "This concept describes the experimental setup consisting of a suspended bar with small spheres and nearby large spheres.",
+    "title": "The Cavendish Experiment",
+    "description": "This experimental setup, first used by Henry Cavendish, precisely measures the Universal Gravitational Constant (G) by observing the torsion twist caused by the gravitational attraction between large and small lead spheres.",
     "id": "7.4.2",
     "parent_section_id": "7.4"
   },
   {
-    "title": "Torque Equilibrium in Cavendish Experiment",
-    "description": "This concept explains how the gravitational torque generated by the masses is balanced by the restoring torque of the twisted suspension wire at equilibrium.",
+    "title": "Principle of Torque Equilibrium in Torsion Balance",
+    "description": "In the Cavendish experiment, the gravitational torque exerted by the large spheres on the small spheres is balanced by the restoring torque of the twisted suspension wire at equilibrium, allowing G to be calculated.",
     "id": "7.4.3",
     "parent_section_id": "7.4"
   },
   {
-    "title": "Deriving G from Twist Angle",
-    "description": "This concept details how the gravitational constant G can be calculated by relating the angle of twist to the known experimental parameters and physical constants.",
-    "id": "7.4.4",
-    "parent_section_id": "7.4"
-  },
-  {
-    "title": "Gravity outside a spherical mass",
-    "description": "Explains that a spherical body exerts gravitational force on an external point as if its entire mass is concentrated at its center.",
+    "title": "Gravitational Force Outside a Spherical Body",
+    "description": "Explains that the gravitational force exerted by a spherical body on an external point mass is equivalent to its entire mass being concentrated at its center.",
     "id": "7.5.1",
     "parent_section_id": "7.5"
   },
   {
-    "title": "Gravity inside a uniform sphere",
-    "description": "Describes that at a point inside a uniform spherical mass, only the mass within the sphere of that radius contributes to the gravitational force.",
+    "title": "Gravitational Force Inside a Spherical Body",
+    "description": "Explains that for a point inside a uniform spherical body, only the mass of the sphere within the point's radius from the center contributes to the gravitational force.",
     "id": "7.5.2",
     "parent_section_id": "7.5"
   },
   {
-    "title": "Defining 'g' at Earth's surface",
-    "description": "Defines the acceleration due to gravity 'g' at the Earth's surface and derives its formula using G, Earth's mass, and Earth's radius.",
+    "title": "Acceleration Due to Gravity (g) at Earth's Surface",
+    "description": "Describes the derivation of the acceleration due to gravity 'g' at the Earth's surface by equating gravitational force with Newton's Second Law.",
     "id": "7.5.3",
     "parent_section_id": "7.5"
   },
   {
-    "title": "Estimating Earth's total mass",
-    "description": "Explains how measuring 'g', 'G', and Earth's radius enables the calculation of the Earth's total mass.",
+    "title": "Newton\u2019s Second Law of Motion",
+    "description": "States the relationship between force, mass, and acceleration ($F=mg$), which is used to define acceleration due to gravity.",
     "id": "7.5.4",
     "parent_section_id": "7.5"
   },
   {
-    "title": "Gravity above Earth's surface",
-    "description": "This concept explains how the acceleration due to gravity changes with height above the Earth's surface, including a general formula and a small-height approximation.",
+    "title": "Acceleration Due to Gravity Above Earth's Surface",
+    "description": "This concept covers the derivation and formula for the acceleration experienced by a mass at a height 'h' above the Earth's surface, showing how it decreases with increasing distance from the Earth's center.",
     "id": "7.6.1",
     "parent_section_id": "7.6"
   },
   {
-    "title": "Gravity below Earth's surface",
-    "description": "This concept explains how the acceleration due to gravity changes with depth below the Earth's surface, deriving a linear relationship.",
+    "title": "Approximation for Acceleration at Small Heights",
+    "description": "This concept explains the approximation of the acceleration due to gravity for small heights 'h' above the Earth's surface using binomial expansion, revealing a linear decrease.",
     "id": "7.6.2",
     "parent_section_id": "7.6"
   },
   {
-    "title": "Maximum gravity at Earth's surface",
-    "description": "This concept states that the acceleration due to gravity is maximum on the Earth's surface and decreases whether one goes up or down.",
+    "title": "Acceleration Due to Gravity Below Earth's Surface",
+    "description": "This concept covers the derivation and formula for the acceleration due to gravity at a depth 'd' below the Earth's surface, demonstrating its linear decrease as one approaches the center.",
     "id": "7.6.3",
     "parent_section_id": "7.6"
   },
   {
-    "title": "Potential Energy and Conservative Forces",
-    "description": "This concept defines potential energy, relates its change to work done by forces, and introduces conservative forces, identifying gravity as one.",
+    "title": "Gravitational Potential Energy (Constant Gravity)",
+    "description": "Explains the calculation of potential energy `mgh` when the gravitational force is assumed constant near the Earth's surface.",
     "id": "7.7.1",
     "parent_section_id": "7.7"
   },
   {
-    "title": "Gravitational Potential Energy Near Earth's Surface",
-    "description": "This concept explains how to calculate gravitational potential energy for objects close to the Earth's surface where the gravitational force is considered constant (mg).",
+    "title": "Work Done by Variable Gravitational Force",
+    "description": "Details the calculation of work done by the gravitational force using integration when the force varies with distance according to the inverse-square law.",
     "id": "7.7.2",
     "parent_section_id": "7.7"
   },
   {
-    "title": "General Gravitational Potential Energy",
-    "description": "This concept derives the general formula for gravitational potential energy between two masses, accounting for varying force with distance and conventionally setting potential energy at infinity to zero.",
+    "title": "Gravitational Potential Energy (General Form)",
+    "description": "Establishes the general formula `U = -GMm/r` for gravitational potential energy between two masses, conventionally setting potential energy to zero at infinite separation.",
     "id": "7.7.3",
     "parent_section_id": "7.7"
   },
   {
-    "title": "Gravitational Potential and Multi-Particle Systems",
-    "description": "This concept defines gravitational potential as potential energy per unit mass and explains how to calculate total potential energy for systems of multiple particles using superposition.",
+    "title": "Gravitational Potential",
+    "description": "Defines gravitational potential as the gravitational potential energy per unit mass at a given point due to a gravitational field.",
     "id": "7.7.4",
     "parent_section_id": "7.7"
   },
   {
-    "title": "Definition of Escape Speed",
-    "description": "Escape speed is the minimum initial velocity an object needs to completely overcome a celestial body's gravitational pull and never fall back.",
+    "title": "Gravitational Potential Energy of Multi-Particle Systems",
+    "description": "Describes how to calculate the total gravitational potential energy for a system of multiple particles by summing the potential energies of all possible pairs using the superposition principle.",
+    "id": "7.7.5",
+    "parent_section_id": "7.7"
+  },
+  {
+    "title": "Principle of Conservation of Energy",
+    "description": "This principle states that the total mechanical energy (sum of kinetic and potential energy) of an object remains constant in the absence of non-conservative forces.",
     "id": "7.8.1",
     "parent_section_id": "7.8"
   },
   {
-    "title": "Applying Energy Conservation for Escape",
-    "description": "The principle of conservation of energy is used to determine the initial speed required for an object to reach an infinite distance from a gravitational source.",
+    "title": "Concept of Escape Speed",
+    "description": "The minimum initial speed an object needs to completely overcome the gravitational pull of a celestial body and achieve an infinite distance with zero kinetic energy.",
     "id": "7.8.2",
     "parent_section_id": "7.8"
   },
   {
-    "title": "Calculating Escape Speed from Surface",
-    "description": "Escape speed can be calculated using the gravitational constant, mass, and radius of the celestial body, or simplified using surface gravity.",
+    "title": "Derivation of Escape Speed",
+    "description": "The process of applying the principle of conservation of energy to an object initially near a celestial body and finally at infinity to deduce the escape speed formula.",
     "id": "7.8.3",
     "parent_section_id": "7.8"
   },
   {
-    "title": "Factors Influencing Escape Speed and Effects",
-    "description": "Escape speed depends on a body's mass and radius, with lower values for smaller, less massive bodies explaining phenomena like the Moon's lack of atmosphere.",
+    "title": "Formulas for Escape Speed",
+    "description": "The specific mathematical expressions for calculating escape speed, including forms dependent on the gravitational constant, mass and radius of the body, and its surface gravity.",
     "id": "7.8.4",
     "parent_section_id": "7.8"
   },
   {
-    "title": "Forces in Satellite Circular Orbit",
-    "description": "This concept explains how the centripetal force required for a satellite's circular motion is provided by the gravitational force between the Earth and the satellite.",
+    "title": "Kepler's Laws of Planetary Motion",
+    "description": "Explains that Kepler's laws, which describe planetary motion, are equally applicable to Earth satellites, dictating their circular or elliptic orbits.",
     "id": "7.9.1",
     "parent_section_id": "7.9"
   },
   {
-    "title": "Calculating Satellite Orbital Speed",
-    "description": "This concept shows how to derive the satellite's speed in a circular orbit by equating the gravitational force to the centripetal force.",
+    "title": "Centripetal Force in Orbital Motion",
+    "description": "Defines the centripetal force required to keep a satellite in a circular orbit around the Earth.",
     "id": "7.9.2",
     "parent_section_id": "7.9"
   },
   {
-    "title": "Satellite Orbital Period and Kepler's Third Law",
-    "description": "This concept explains how to calculate the time period of a satellite's circular orbit and demonstrates its relationship to the orbital radius, confirming Kepler's Law of Periods.",
+    "title": "Newton's Law of Universal Gravitation",
+    "description": "Explains that the centripetal force required for a satellite's orbit is provided by the gravitational force exerted by the Earth.",
     "id": "7.9.3",
     "parent_section_id": "7.9"
   },
   {
-    "title": "Kinetic Energy of Orbiting Satellites",
-    "description": "This concept covers how to determine the kinetic energy of a satellite moving in an orbit.",
+    "title": "Orbital Velocity and Period Derivation",
+    "description": "Demonstrates how equating the centripetal and gravitational forces allows for the derivation of a satellite's orbital velocity and its corresponding time period.",
+    "id": "7.9.4",
+    "parent_section_id": "7.9"
+  },
+  {
+    "title": "Kepler's Law of Periods for Satellites",
+    "description": "Derives and applies Kepler's Third Law, known as the Law of Periods, to describe the relationship between a satellite's orbital period and its orbital radius around Earth.",
+    "id": "7.9.5",
+    "parent_section_id": "7.9"
+  },
+  {
+    "title": "Kinetic Energy in Orbit",
+    "description": "This concept covers the derivation and calculation of the kinetic energy of a satellite moving in a circular orbit, based on its orbital speed and mass.",
     "id": "7.10.1",
     "parent_section_id": "7.10"
   },
   {
-    "title": "Gravitational Potential Energy of Orbiting Satellites",
-    "description": "This concept explains how to calculate the gravitational potential energy of an orbiting satellite, typically with zero potential energy at infinity.",
+    "title": "Gravitational Potential Energy",
+    "description": "This concept explains the calculation of the gravitational potential energy of an orbiting satellite at a given distance from Earth, with the reference point of zero potential energy at infinity.",
     "id": "7.10.2",
     "parent_section_id": "7.10"
   },
   {
-    "title": "Total Energy and KE/PE Relationship in Circular Orbits",
-    "description": "This concept details the fixed relationship between kinetic, potential, and total energy for a satellite in a circular orbit, including their signs and magnitudes.",
+    "title": "Total Mechanical Energy of Orbiting Satellite",
+    "description": "This concept defines the total mechanical energy of a satellite as the sum of its kinetic and potential energies, highlighting its specific characteristics for both circular and elliptic orbits.",
     "id": "7.10.3",
     "parent_section_id": "7.10"
   },
   {
-    "title": "Total Energy in Elliptic Orbits",
-    "description": "This concept describes how kinetic and potential energies vary in elliptic orbits while the total energy remains constant and negative.",
+    "title": "Energy and Orbital Stability",
+    "description": "This concept explains the critical relationship between the total mechanical energy of a celestial body and the nature of its trajectory, distinguishing between bound orbits (negative total energy) and escape trajectories (zero or positive total energy).",
     "id": "7.10.4",
-    "parent_section_id": "7.10"
-  },
-  {
-    "title": "Total Energy Sign and Orbital Boundness",
-    "description": "This concept explains that negative total energy signifies a bound orbit, while positive or zero total energy indicates escape from gravitational influence.",
-    "id": "7.10.5",
     "parent_section_id": "7.10"
   }
 ]

@@ -154,6 +154,7 @@ interface ChatPanelProps {
     onClose?: () => void;
     onSuggestionClick?: (suggestion: string) => void;
     onNextSection?: () => void;  // Navigate to next section
+    onAddMessages?: (messages: ChatMessage[]) => void;  // Add messages to chat
 }
 
 export default function ChatPanel({
@@ -166,6 +167,7 @@ export default function ChatPanel({
     onClose,
     onSuggestionClick,
     onNextSection,
+    onAddMessages,
 }: ChatPanelProps) {
     const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -274,14 +276,35 @@ export default function ChatPanel({
                 // Refresh section status
                 await fetchSectionStatus();
 
-                if (data.all_verified) {
+                if (data.is_correct && data.next_subconcept_explanation) {
+                    // Add the next subconcept explanation as a message
+                    const explanationMessage = {
+                        role: "assistant" as const,
+                        content: `✅ Great job! Now let's learn about **${data.next_subconcept_title}**:\n\n${data.next_subconcept_explanation}`
+                    };
+                    onAddMessages?.([explanationMessage]);
+
+                    // Close verification modal after a short delay
                     setTimeout(() => {
                         setIsCheckingUnderstanding(false);
                         setVerificationQuestion(null);
                         setVerificationFeedback(null);
-                    }, 3000);
+                    }, 1500);
+                } else if (data.all_verified) {
+                    // All subconcepts verified - show section complete message
+                    const completeMessage = data.next_section_id
+                        ? `🎉 **Section Complete!** You've mastered all concepts in this section.\n\nReady to continue to **${data.next_section_title || data.next_section_id}**?`
+                        : `🎉 **Section Complete!** You've mastered all concepts in this section.`;
+
+                    onAddMessages?.([{ role: "assistant" as const, content: completeMessage }]);
+
+                    setTimeout(() => {
+                        setIsCheckingUnderstanding(false);
+                        setVerificationQuestion(null);
+                        setVerificationFeedback(null);
+                    }, 2000);
                 } else if (data.next_question) {
-                    // Move to next question after showing feedback
+                    // Move to next verification question after showing feedback
                     setTimeout(() => {
                         setVerificationQuestion(data.next_question);
                         setCurrentVerifyConceptId(data.next_concept?.id);
@@ -289,6 +312,7 @@ export default function ChatPanel({
                     }, 2000);
                 }
             }
+
         } catch (err) {
             console.error("Failed to verify understanding:", err);
         } finally {

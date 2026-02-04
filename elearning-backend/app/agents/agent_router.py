@@ -4,6 +4,7 @@ Routes user messages through the LangGraph tutor agent with state persistence.
 Thread ID is based on user_id to maintain conversation state per user.
 """
 from langchain_core.messages import HumanMessage, AIMessage
+import json
 
 
 async def invoke_tutor_agent(
@@ -22,14 +23,46 @@ async def invoke_tutor_agent(
         dict with 'messages', 'mode', and other state fields
     """
     from app.agents.tutor_agent import tutor_agent, TutorState
+    from app.graph.chat_history import get_chat_history
     
     # Thread ID = user_id (persists state per user)
     thread_id = f"tutor-{user_id}"
     config = {"configurable": {"thread_id": thread_id}}
     
-    # Build initial state from context
+    # Load chat history from Neo4j for context
+    section_id = context.get("current_section") or context.get("current_concept_id")
+    history_messages = []
+    if section_id:
+        try:
+            chat_history = await get_chat_history(user_id, section_id, limit=5)
+            for msg in chat_history:
+                content = msg.get("content", "")
+                # Parse JSON content if stored as string
+                if isinstance(content, str):
+                    try:
+                        parsed = json.loads(content)
+                        if isinstance(parsed, list):
+                            # Extract text from content items
+                            content = " ".join([
+                                item.get("text", "") 
+                                for item in parsed 
+                                if isinstance(item, dict) and item.get("type") == "text"
+                            ])
+                    except json.JSONDecodeError:
+                        pass  # Keep original string
+                
+                if msg.get("role") == "user":
+                    history_messages.append(HumanMessage(content=content))
+                elif msg.get("role") == "assistant":
+                    history_messages.append(AIMessage(content=content))
+        except Exception as e:
+            print(f"Error loading chat history: {e}")
+    
+    # Build initial state - prepend history, append current message
+    all_messages = history_messages + [HumanMessage(content=message)]
+    
     initial_state: TutorState = {
-        "messages": [HumanMessage(content=message)],
+        "messages": all_messages,
         "user_id": user_id,
         "current_concept_id": context.get("current_section") or context.get("current_concept_id"),
         "current_concept_title": context.get("section_title"),
@@ -49,6 +82,7 @@ async def invoke_tutor_agent(
         "main_concept_id": None,  # Preserved when going deeper into prereqs
         "main_concept_title": None
     }
+
     
     # Invoke agent with persistence
     try:

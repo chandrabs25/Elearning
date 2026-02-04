@@ -27,40 +27,56 @@ def generate_subconcepts_for_section(model, section: dict) -> list[dict]:
     section_id = section.get("section_id", "")
     title = section.get("section_title", "")
     
-    # Extract text from content array
+    # Extract ALL content types from content array
     content_items = section.get("content", [])
     text_parts = []
     for item in content_items:
-        if item.get("type") == "text" and item.get("body"):
+        item_type = item.get("type", "")
+        
+        if item_type == "text" and item.get("body"):
             text_parts.append(item["body"])
-    text = "\n\n".join(text_parts)[:4000]  # Limit for prompt size
+        
+        elif item_type == "list_item":
+            # IMPORTANT: This captures laws like "1. Law of orbits"
+            label = item.get("label", "")
+            body = item.get("body", "")
+            text_parts.append(f"**{label}**: {body}")
+        
+        elif item_type == "derivation" and item.get("meta"):
+            text_parts.append(f"[Derivation: {item['meta']}]")
+        
+        elif item_type == "example_box":
+            label = item.get("label", "")
+            question = item.get("question", "")
+            text_parts.append(f"[{label}: {question[:200]}]")
+    
+    # Increased limit to capture more content
+    text = "\n\n".join(text_parts)[:8000]
     
     # Skip non-chapter sections
     if not section_id.startswith("7.") or section_id in ["Summary", "Points to ponder", "Exercises"]:
         print(f"  Skipping non-chapter section: {section_id}")
         return []
     
-    prompt = f"""Analyze this physics section and identify 2-5 distinct key concepts that should be taught separately.
+    prompt = f"""Analyze this physics section and identify the KEY LAWS, PRINCIPLES, or CONCEPTS that should be taught as separate units.
 
 Section: {title} (ID: {section_id})
-Content:
+
+Full Content:
 {text}
 
-For each concept, provide:
-1. A short, clear title (max 10 words)
-2. A one-sentence description of what it covers
+CRITICAL INSTRUCTIONS:
+1. If the section contains NAMED LAWS (e.g., "Law of orbits", "First Law", "Second Law"), EACH LAW must be a separate subconcept
+2. If there are numbered principles or rules, extract each one individually
+3. Focus on the PRIMARY educational content, not supporting explanations or illustrations
+4. Titles should be concise and reflect the actual law/concept name from the content
+5. Extract 2-6 subconcepts based on the actual structure of the content
 
-Return ONLY a valid JSON array in this exact format (no markdown, no explanation):
+Return ONLY a valid JSON array (no markdown):
 [
-  {{"title": "Concept Title", "description": "What this concept covers"}},
-  {{"title": "Another Concept", "description": "What this covers"}}
-]
-
-Important:
-- Extract 2-5 concepts from the actual content provided
-- Make titles concise and specific
-- Ensure descriptions are one sentence each
-- Return ONLY the JSON array, nothing else"""
+  {{"title": "Concise Title", "description": "One-sentence explanation of what this covers"}},
+  ...
+]"""
 
     try:
         response = model.generate_content(prompt)
@@ -75,7 +91,7 @@ Important:
         
         subconcepts = json.loads(content)
         
-        # Add IDs
+        # Add IDs and parent reference
         for i, sc in enumerate(subconcepts):
             sc["id"] = f"{section_id}.{i + 1}"
             sc["parent_section_id"] = section_id
@@ -91,10 +107,12 @@ Important:
         return []
 
 
+
 async def store_subconcepts_in_neo4j(driver, subconcepts: list[dict]):
-    """Store subconcepts in Neo4j as Concept nodes."""
+    """Store subconcepts in Neo4j as Concept nodes with sequential relationships."""
     
     async with driver.session() as session:
+        # First, create all subconcept nodes
         for sc in subconcepts:
             query = """
             MERGE (c:Concept {id: $id})
@@ -123,6 +141,35 @@ async def store_subconcepts_in_neo4j(driver, subconcepts: list[dict]):
                 print(f"    ✓ Stored: {sc['id']} - {sc['title']}")
             except Exception as e:
                 print(f"    ✗ Error storing {sc['id']}: {e}")
+        
+        # Group subconcepts by parent section and create NEXT_SUBCONCEPT relationships
+        print("\n🔗 Creating NEXT_SUBCONCEPT relationships...")
+        sections = {}
+        for sc in subconcepts:
+            parent = sc["parent_section_id"]
+            if parent not in sections:
+                sections[parent] = []
+            sections[parent].append(sc)
+        
+        for section_id, section_subconcepts in sections.items():
+            # Sort by ID to ensure correct order
+            section_subconcepts.sort(key=lambda x: x["id"])
+            
+            for i in range(len(section_subconcepts) - 1):
+                from_id = section_subconcepts[i]["id"]
+                to_id = section_subconcepts[i + 1]["id"]
+                
+                try:
+                    await session.run("""
+                        MATCH (a:Concept {id: $from_id})
+                        MATCH (b:Concept {id: $to_id})
+                        MERGE (a)-[:NEXT_SUBCONCEPT]->(b)
+                    """, from_id=from_id, to_id=to_id)
+                    print(f"    ✓ {from_id} -> {to_id}")
+                except Exception as e:
+                    print(f"    ✗ Error linking {from_id} -> {to_id}: {e}")
+
+
 
 
 async def main():

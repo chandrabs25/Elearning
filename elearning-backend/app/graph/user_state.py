@@ -574,6 +574,147 @@ async def supersede_insight(old_insight_id: str, new_insight_id: str) -> bool:
     return bool(results)
 
 
+async def create_insight_with_supersede(
+    user_id: str,
+    insight_type: str,  # COMPETENCY or MISCONCEPTION
+    content: str,
+    concept_ids: list[str],
+    confidence: float = 1.0
+) -> dict:
+    """Create a new insight AND automatically supersede contradicting insights.
+    
+    Supersede logic:
+    - If creating COMPETENCY → supersede existing MISCONCEPTIONs for same concepts
+    - If creating MISCONCEPTION → supersede existing COMPETENCYs for same concepts
+    
+    Args:
+        user_id: The user's ID
+        insight_type: Type of insight (COMPETENCY or MISCONCEPTION)
+        content: Description of the insight
+        concept_ids: List of concept IDs this insight is about
+        confidence: How certain the agent is about this insight (0.0-1.0)
+    
+    Returns:
+        The created insight with its ID and count of superseded insights
+    """
+    # Determine which type to supersede
+    opposite_type = "MISCONCEPTION" if insight_type == "COMPETENCY" else "COMPETENCY"
+    
+    # First, find existing contradicting insights for the same concepts
+    find_query = """
+    MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(i:Insight {type: $opposite_type})-[:ABOUT]->(c:Concept)
+    WHERE c.id IN $concept_ids AND i.superseded_by IS NULL
+    RETURN i.id as id, i.content as content, collect(c.id) as concept_ids
+    """
+    
+    contradicting = await neo4j_client.execute_read(
+        find_query,
+        user_id=user_id,
+        opposite_type=opposite_type,
+        concept_ids=concept_ids
+    )
+    
+    # Create the new insight
+    new_insight = await create_insight(
+        user_id=user_id,
+        insight_type=insight_type,
+        content=content,
+        concept_ids=concept_ids,
+        confidence=confidence
+    )
+    
+    new_insight_id = new_insight.get("id")
+    superseded_count = 0
+    
+    # Supersede all contradicting insights
+    if new_insight_id and contradicting:
+        for old in contradicting:
+            old_id = old.get("id")
+            if old_id:
+                success = await supersede_insight(old_id, new_insight_id)
+                if success:
+                    superseded_count += 1
+                    print(f"[Insight] Superseded {opposite_type}: {old.get('content', old_id)[:50]}...")
+    
+    new_insight["superseded_count"] = superseded_count
+    
+    if superseded_count > 0:
+        print(f"[Insight] Created {insight_type} and superseded {superseded_count} {opposite_type}(s)")
+    
+    return new_insight
+
+
+async def get_prerequisite_insights(user_id: str, concept_id: str) -> list[dict]:
+    """Get learning status and insights for all prerequisites of a concept.
+    
+    This provides the tutor with context about the student's understanding of
+    prerequisite concepts, including:
+    - Whether each prerequisite has been taught
+    - Whether each prerequisite has been verified
+    - Any competency or misconception insights
+    
+    Args:
+        user_id: The user's ID
+        concept_id: The concept whose prerequisites to check
+    
+    Returns:
+        List of prerequisite status dicts with id, title, is_taught, is_verified, insights
+    """
+    # For subconcepts (e.g., 7.3.1), check parent section's prerequisites (7.3)
+    section_id = concept_id
+    if concept_id.count('.') >= 2:
+        section_id = '.'.join(concept_id.split('.')[:2])
+    
+    query = """
+    // Get prerequisites for the concept (or its parent section)
+    MATCH (c:Concept {id: $section_id})-[:REQUIRES]->(prereq:Concept)
+    
+    // Check if this prerequisite has a TAUGHT insight for this user
+    OPTIONAL MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(taught:Insight {type: "TAUGHT"})-[:ABOUT]->(prereq)
+    WHERE taught.superseded_by IS NULL
+    
+    // Get all active insights for this prerequisite
+    OPTIONAL MATCH (u)-[:HAS_INSIGHT]->(insight:Insight)-[:ABOUT]->(prereq)
+    WHERE insight.superseded_by IS NULL AND insight.id <> taught.id
+    
+    WITH prereq, taught, 
+         collect(DISTINCT {
+             type: insight.type, 
+             content: insight.content,
+             confidence: insight.confidence
+         }) as insights
+    
+    RETURN prereq.id as id,
+           prereq.title as title,
+           prereq.description as description,
+           CASE WHEN taught IS NOT NULL THEN true ELSE false END as is_taught,
+           COALESCE(taught.verified, false) as is_verified,
+           insights
+    ORDER BY prereq.id
+    """
+    
+    results = await neo4j_client.execute_read(
+        query,
+        user_id=user_id,
+        section_id=section_id
+    )
+    
+    # Filter out empty insights and format response
+    formatted = []
+    for r in results:
+        insights = [i for i in r["insights"] if i.get("type")]  # Filter empty
+        formatted.append({
+            "id": r["id"],
+            "title": r["title"] or r["id"],
+            "description": r["description"] or "",
+            "is_taught": r["is_taught"],
+            "is_verified": r["is_verified"],
+            "insights": insights
+        })
+    
+    return formatted
+
+
 # === Concept Explanation Tracking Functions ===
 
 async def mark_concept_explained(user_id: str, concept_id: str) -> dict:
@@ -658,6 +799,8 @@ async def get_section_learning_status(user_id: str, section_id: str) -> dict:
     Note: Only counts sub-concepts (e.g., 7.3.1, 7.3.2) for progress tracking,
     not the parent section itself (7.3).
     
+    Concepts needing retry are sorted to the END of the verification queue.
+    
     Args:
         user_id: The user's ID
         section_id: The section ID (e.g., "7.3")
@@ -666,7 +809,7 @@ async def get_section_learning_status(user_id: str, section_id: str) -> dict:
         {
             "section_id": "7.3",
             "concepts": [
-                {"id": "7.3.1", "title": "...", "explained": true, "verified": false},
+                {"id": "7.3.1", "title": "...", "explained": true, "verified": false, "needs_retry": false},
                 ...
             ],
             "all_explained": bool,
@@ -677,6 +820,7 @@ async def get_section_learning_status(user_id: str, section_id: str) -> dict:
         }
     """
     # Get all SUB-CONCEPTS in the section (excludes section itself)
+    # Include retry fields for queue ordering
     query = """
     MATCH (c:Concept)
     WHERE c.id STARTS WITH $section_prefix
@@ -685,7 +829,9 @@ async def get_section_learning_status(user_id: str, section_id: str) -> dict:
     RETURN c.id as id, 
            c.title as title,
            CASE WHEN i IS NOT NULL THEN true ELSE false END as explained,
-           COALESCE(i.verified, false) as verified
+           COALESCE(i.verified, false) as verified,
+           COALESCE(i.needs_retry, false) as needs_retry,
+           COALESCE(i.retry_count, 0) as retry_count
     ORDER BY c.id
     """
     
@@ -703,9 +849,20 @@ async def get_section_learning_status(user_id: str, section_id: str) -> dict:
                 "id": r["id"],
                 "title": r["title"] or r["id"],
                 "explained": r["explained"],
-                "verified": r["verified"]
+                "verified": r["verified"],
+                "needs_retry": r["needs_retry"],
+                "retry_count": r["retry_count"]
             })
     
+    # Sort: concepts needing retry go to the END of the queue
+    # First: explained but not verified, not needing retry (fresh verifications)
+    # Then: needing retry (sorted by retry_count for fairness)
+    concepts_to_verify = [c for c in concepts if c["explained"] and not c["verified"]]
+    fresh = [c for c in concepts_to_verify if not c["needs_retry"]]
+    retries = sorted([c for c in concepts_to_verify if c["needs_retry"]], key=lambda x: x["retry_count"])
+    
+    # Rebuild concepts list maintaining original order for explained/verified
+    # but with to_verify order updated
     explained_count = sum(1 for c in concepts if c["explained"])
     verified_count = sum(1 for c in concepts if c["verified"])
     total_count = len(concepts)
@@ -713,6 +870,7 @@ async def get_section_learning_status(user_id: str, section_id: str) -> dict:
     return {
         "section_id": section_id,
         "concepts": concepts,
+        "to_verify_ordered": fresh + retries,  # NEW: ordered queue for verification
         "all_explained": explained_count == total_count and total_count > 0,
         "all_verified": verified_count == total_count and total_count > 0,
         "explained_count": explained_count,
@@ -721,7 +879,8 @@ async def get_section_learning_status(user_id: str, section_id: str) -> dict:
     }
 
 
-async def mark_concept_verified(user_id: str, concept_id: str, is_verified: bool = True) -> dict:
+
+async def mark_concept_verified(user_id: str, concept_id: str, is_verified: bool = True, insight_content: str | None = None) -> dict:
     """Mark a concept as verified (student demonstrated understanding).
     
     Updates the TAUGHT insight's verified field.
@@ -731,6 +890,7 @@ async def mark_concept_verified(user_id: str, concept_id: str, is_verified: bool
         user_id: The user's ID
         concept_id: The concept to mark as verified
         is_verified: Whether the student passed verification
+        insight_content: Optional LLM-generated insight content (uses default if not provided)
         
     Returns:
         Updated status
@@ -755,10 +915,12 @@ async def mark_concept_verified(user_id: str, concept_id: str, is_verified: bool
     
     # If verified, also create a COMPETENCY insight
     if is_verified and results:
+        # Use provided LLM content or fallback to default
+        content = insight_content or f"Demonstrated understanding of '{concept_title}' through verification"
         await create_insight(
             user_id=user_id,
             insight_type="COMPETENCY",
-            content=f"Demonstrated understanding of '{concept_title}' through verification",
+            content=content,
             concept_ids=[concept_id],
             confidence=0.9
         )
@@ -771,6 +933,65 @@ async def mark_concept_verified(user_id: str, concept_id: str, is_verified: bool
         "verified": is_verified,
         "insight_updated": bool(results)
     }
+
+
+async def schedule_retry_verification(user_id: str, concept_id: str) -> dict:
+    """Schedule a failed verification for retry at the end of the queue.
+    
+    This is called when a student fails verification. The concept is pushed to
+    the back of the verification queue by setting retry_at timestamp.
+    
+    Args:
+        user_id: The user's ID
+        concept_id: The concept that needs retry
+        
+    Returns:
+        Updated retry state
+    """
+    query = """
+    MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(i:Insight {type: "TAUGHT"})-[:ABOUT]->(c:Concept {id: $concept_id})
+    WHERE i.superseded_by IS NULL
+    SET i.retry_count = COALESCE(i.retry_count, 0) + 1,
+        i.retry_at = datetime(),
+        i.needs_retry = true
+    RETURN i.id as id, i.retry_count as retry_count, c.id as concept_id
+    """
+    
+    results = await neo4j_client.execute_write(
+        query,
+        user_id=user_id,
+        concept_id=concept_id
+    )
+    
+    # Invalidate cache
+    await cache_delete(f"user_state:{user_id}")
+    
+    if results:
+        return {
+            "concept_id": concept_id,
+            "retry_count": results[0]["retry_count"],
+            "scheduled": True
+        }
+    return {"concept_id": concept_id, "scheduled": False}
+
+
+async def clear_retry_flag(user_id: str, concept_id: str) -> bool:
+    """Clear retry flag when verification passes on retry."""
+    query = """
+    MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(i:Insight {type: "TAUGHT"})-[:ABOUT]->(c:Concept {id: $concept_id})
+    WHERE i.superseded_by IS NULL
+    SET i.needs_retry = false
+    RETURN i.id as id
+    """
+    
+    results = await neo4j_client.execute_write(
+        query,
+        user_id=user_id,
+        concept_id=concept_id
+    )
+    
+    await cache_delete(f"user_state:{user_id}")
+    return bool(results)
 
 
 # === Sub-Concept Navigation Functions ===

@@ -40,6 +40,7 @@ interface DynamicPanelProps {
     chatSuggestions?: string[];
     onChatSuggestionClick?: (suggestion: string) => void;
     onNextSection?: () => void;  // Continue to next section
+    onAddMessages?: (messages: ChatMessage[]) => void;  // Add messages to chat
     // Exercise-specific props
     onExerciseSubmit?: (exerciseLabel: string, answer: string) => Promise<{
         isCorrect: boolean;
@@ -205,6 +206,7 @@ export default function DynamicPanel({
     onChatSuggestionClick,
     onExerciseSubmit,
     onNextSection,
+    onAddMessages,
 }: DynamicPanelProps) {
     const Component = componentRegistry[panel.type];
     const animationPreset = panel.animation || "fadeIn";
@@ -239,6 +241,7 @@ export default function DynamicPanel({
             onClose,
             onSuggestionClick: onChatSuggestionClick,
             onNextSection,
+            onAddMessages,
         };
     } else if (panel.type === "ExercisePanel") {
         // Exercise panel needs async submit handler for LLM evaluation

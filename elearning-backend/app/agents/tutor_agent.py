@@ -130,7 +130,7 @@ async def retrieve_context(state: TutorState) -> TutorState:
     Always fetches prerequisites and insights to enable personalized Socratic flow.
     Only skips content retrieval if already provided.
     """
-    from app.graph.user_state import get_insights_for_concept
+    from app.graph.user_state import get_insights_for_concept, get_prerequisite_insights
     
     concept_id = state.get("current_concept_id") or "7.3"
     user_id = state.get("user_id")
@@ -152,8 +152,14 @@ async def retrieve_context(state: TutorState) -> TutorState:
             insights = await get_insights_for_concept(user_id, concept_id)
             state["insights"] = insights
             print(f"[Insights] Found {len(insights)} insights for user {user_id} on {concept_id}")
+            
+            # NEW: Fetch prerequisite learning status and insights
+            prereq_insights = await get_prerequisite_insights(user_id, concept_id)
+            state["prerequisite_insights"] = prereq_insights
+            print(f"[Prerequisites] Found learning status for {len(prereq_insights)} prerequisites")
         else:
             state["insights"] = []
+            state["prerequisite_insights"] = []
         
         # Debug: Log what we found
         prereq_count = len(state["prerequisites"])
@@ -165,6 +171,8 @@ async def retrieve_context(state: TutorState) -> TutorState:
             state["concept_content"] = ""
         state["prerequisites"] = []
         state["insights"] = []
+        state["prerequisite_insights"] = []
+
     
     # Initialize mode if not set
     if not state.get("mode"):
@@ -821,7 +829,7 @@ Guidelines:
             current_idx = next((i for i, sc in enumerate(all_subconcepts) if sc["id"] == current_subconcept_id), 0)
             progress_info = f"\n\n📍 **Currently Teaching:** {subconcept_title} ({current_idx + 1}/{len(all_subconcepts)})"
         
-        # Build insight context
+        # Build insight context for current concept
         insights = state.get("insights", [])
         insight_context = ""
         if insights:
@@ -837,6 +845,26 @@ Guidelines:
                     insight_lines.append(f"- 💡 Preference: {content}")
             if insight_lines:
                 insight_context = "\n\n**Student History (use this to personalize your response):**\n" + "\n".join(insight_lines)
+        
+        # NEW: Build prerequisite context
+        prereq_insights = state.get("prerequisite_insights", [])
+        prereq_context = ""
+        if prereq_insights:
+            prereq_lines = []
+            for p in prereq_insights:
+                status = "✅ Taught & Verified" if p["is_verified"] else ("📚 Taught" if p["is_taught"] else "❌ Not yet covered")
+                prereq_lines.append(f"- {p['title']}: {status}")
+                for insight in p.get("insights", []):
+                    if insight.get("type") == "MISCONCEPTION":
+                        prereq_lines.append(f"    ⚠️ Struggled: {insight['content']}")
+                    elif insight.get("type") == "COMPETENCY":
+                        prereq_lines.append(f"    ✅ Strong: {insight['content']}")
+            if prereq_lines:
+                prereq_context = "\n\n**Prerequisite Knowledge Status (use this to adjust your teaching):**\n" + "\n".join(prereq_lines)
+        
+        # Combine insight contexts
+        full_insight_context = insight_context + prereq_context
+
         
         # Get mastery-based suggestion
         suggestion = await get_mastery_suggestion(user_id, section_id)
@@ -868,7 +896,8 @@ Subconcept: {subconcept_title}
 ---
 {section_context}
 ---
-{insight_context}
+{full_insight_context}
+
 
 === CRITICAL RULES ===
 1. ONLY teach the subconcept "{subconcept_title}" - DO NOT explain other concepts from this section
@@ -906,10 +935,8 @@ Subconcept: {subconcept_title}
             
             if concept_to_mark:
                 await mark_concept_explained(user_id, concept_to_mark)
-                
-                # Also mark parent section to ensure section-level tracking works
-                if state.get("current_subconcept_id") and section_id:
-                    await mark_concept_explained(user_id, section_id)
+                # Note: Only mark the subconcept, not the parent section
+                # Section progress is derived from subconcept progress
                 
                 # Get updated section status
                 section_status = await get_section_learning_status(user_id, section_id)
@@ -1035,10 +1062,8 @@ FORBIDDEN: Do not teach the entire section. Focus ONLY on this single sub-concep
         try:
             await mark_concept_explained(user_id, current_sc)
             print(f"[continue_topic] Marked {current_sc} as explained for {user_id}")
-            
-            # Also mark parent section
-            if section_id and section_id != current_sc:
-                await mark_concept_explained(user_id, section_id)
+            # Note: Only mark the subconcept, not the parent section
+            # Section progress is derived from subconcept progress
         except Exception as e:
             print(f"[continue_topic] Error marking explained: {e}")
     
@@ -1071,8 +1096,9 @@ FORBIDDEN: Do not teach the entire section. Focus ONLY on this single sub-concep
 
 
 async def explain_prereqs(state: TutorState) -> TutorState:
-    """User doesn't know prerequisites - explain them."""
+    """User doesn't know prerequisites - explain them with actual content."""
     from app.config import settings
+    from app.chains.content import get_section_by_id, extract_section_text
     
     llm = ChatGroq(
         model="llama-3.3-70b-versatile",
@@ -1081,16 +1107,42 @@ async def explain_prereqs(state: TutorState) -> TutorState:
     )
     
     prereqs = state.get("prerequisites", [])
-    prereq_titles = ", ".join([p["title"] for p in prereqs])
+    prereq_titles = ", ".join([p["title"] for p in prereqs if p.get("title")])
+    
+    # Fetch actual content for each prerequisite from gravity.json
+    prereq_content_blocks = []
+    for prereq in prereqs:
+        prereq_id = prereq.get("id")
+        prereq_title = prereq.get("title", "Unknown")
+        
+        if prereq_id:
+            # Try to get content from gravity.json
+            section = get_section_by_id(prereq_id)
+            if section:
+                content_text = extract_section_text(section, max_length=800)
+                prereq_content_blocks.append(f"### {prereq_title}\n{content_text}")
+            else:
+                # Fallback to description if no section found
+                description = prereq.get("description", "")
+                prereq_content_blocks.append(f"### {prereq_title}\n{description or 'Cover the basics of this concept.'}")
+        else:
+            # External prerequisite without ID - use description
+            description = prereq.get("description", "")
+            prereq_content_blocks.append(f"### {prereq_title}\n{description or 'Explain the fundamental principles.'}")
+    
+    prereq_content = "\n\n".join(prereq_content_blocks) if prereq_content_blocks else "No detailed content available."
     
     system_prompt = f"""You are an AI physics tutor. The student needs help understanding prerequisites for **{state.get('current_concept_title')}**.
 
 Prerequisites to explain: {prereq_titles}
 
-Guidelines:
-1. Explain these prerequisite concepts clearly and simply.
-2. Use analogies if helpful.
-3. Relate them back to why they feature in {state.get('current_concept_title')}.
+**Reference Content for Each Prerequisite:**
+{prereq_content}
+
+**Guidelines:**
+1. Use the reference content above to explain each prerequisite clearly and accurately.
+2. Use analogies if helpful to make concepts more accessible.
+3. Relate each prerequisite back to why it's important for understanding {state.get('current_concept_title')}.
 4. After explaining, ask: "Does that make sense? Are you ready to continue with {state.get('current_concept_title')}?"
 """
 
@@ -1101,6 +1153,7 @@ Guidelines:
     state["mode"] = "checking_prereq_familiarity" 
     state["messages"] = state.get("messages", []) + [AIMessage(content=response.content)]
     return state
+
 
 
 async def answer_off_topic(state: TutorState) -> TutorState:
@@ -1302,11 +1355,16 @@ tutor_agent = build_tutor_graph()
 async def evaluate_quiz_answer(
     question: str,
     solution: str,
-    student_answer: str
+    student_answer: str,
+    generate_insight_content: bool = False
 ) -> dict:
     """
     Evaluate a quiz/open-ended answer using LLM.
-    Returns: {is_correct, is_partial, feedback}
+    Returns: {is_correct, is_partial, feedback, insight_content (optional)}
+    
+    Args:
+        generate_insight_content: If True, makes a second LLM call to generate
+                                  concise insight content for COMPETENCY/MISCONCEPTION
     """
     from app.config import settings
     
@@ -1346,11 +1404,48 @@ Feedback: [Your constructive feedback here]"""
             feedback = eval_text.split("Feedback:")[-1].strip()
         feedback = feedback.replace("Status: CORRECT", "").replace("Status: PARTIAL", "").replace("Status: WRONG", "").strip()
         
-        return {
+        result = {
             "is_correct": is_correct,
             "is_partial": is_partial,
             "feedback": feedback
         }
+        
+        # Generate insight content if requested
+        if generate_insight_content:
+            try:
+                if is_correct:
+                    insight_prompt = f"""Based on this student's CORRECT answer, summarize what they understood well in ONE concise sentence.
+
+Question: {question}
+Student's answer: {student_answer}
+
+Write a brief statement like:
+"Correctly applied [concept] to solve [problem type]"
+
+Respond with ONLY the summary sentence."""
+                else:
+                    insight_prompt = f"""Based on this student's {'PARTIAL' if is_partial else 'INCORRECT'} answer, identify the specific gap in ONE concise sentence.
+
+Question: {question}
+Student's answer: {student_answer}
+Feedback: {feedback}
+
+Write a brief statement like:
+"Struggled with [specific concept] - needs review of [topic]"
+
+Respond with ONLY the summary sentence."""
+                
+                insight_response = await llm.ainvoke([HumanMessage(content=insight_prompt)])
+                result["insight_content"] = insight_response.content.strip().strip('"')
+            except Exception as e:
+                print(f"Insight generation error: {e}")
+                # Fallback to simple insight
+                if is_correct:
+                    result["insight_content"] = f"Correctly answered question about {question[:50]}..."
+                else:
+                    result["insight_content"] = f"Struggled with question about {question[:50]}..."
+        
+        return result
     except Exception as e:
         print(f"Quiz evaluation error: {e}")
         return {
@@ -1358,3 +1453,4 @@ Feedback: [Your constructive feedback here]"""
             "is_partial": False,
             "feedback": "Unable to evaluate your answer. Please try again."
         }
+

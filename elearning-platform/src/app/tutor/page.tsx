@@ -815,9 +815,13 @@ export default function TutorV2Page() {
                                                 sendTutorMessage(`teach me ${nextId}`, true);
                                             }
                                         } : undefined}
+                                        onAddMessages={panel.type === "ChatPanel" ? (newMsgs) => {
+                                            setChatMessages(prev => [...prev, ...newMsgs]);
+                                        } : undefined}
                                         // Exercise-specific props
                                         onExerciseSubmit={panel.type === "ExercisePanel" ? handleExerciseSubmit : undefined}
                                     />
+
                                 );
                             })}
                         </motion.div>
