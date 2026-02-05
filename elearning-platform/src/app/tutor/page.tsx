@@ -7,6 +7,18 @@ import DynamicPanel from "@/components/DynamicPanel";
 import CelebrationModal from "@/components/CelebrationModal";
 import ProgressBar from "@/components/ProgressBar";
 import { ChatMessage } from "@/components/cards/ChatPanel";
+import {
+    saveMessages,
+    loadMessages,
+    addPendingOperation,
+    processRetryQueue,
+    saveProgress,
+    loadProgress,
+    saveContext,
+    loadContext,
+    saveUIState,
+    loadUIState,
+} from "@/lib/persistence";
 
 type LayoutMode = "focus" | "split" | "compare" | "stack" | "dynamic";
 type PanelRole = "primary" | "secondary" | "auxiliary";
@@ -136,6 +148,34 @@ export default function TutorV2Page() {
     // Initialize session
     useEffect(() => {
         initSession();
+
+        // Process any pending operations from previous sessions
+        processRetryQueue({
+            verify: async (payload) => {
+                try {
+                    const res = await fetch(`${BACKEND_URL}/api/tutor/verify-understanding`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload)
+                    });
+                    return res.ok;
+                } catch {
+                    return false;
+                }
+            },
+            "teach-subconcept": async (payload) => {
+                try {
+                    const res = await fetch(`${BACKEND_URL}/api/tutor/teach-subconcept`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload)
+                    });
+                    return res.ok;
+                } catch {
+                    return false;
+                }
+            }
+        });
     }, []);
 
     // Determine if a ChatPanel exists and which panel is focused
@@ -226,20 +266,46 @@ export default function TutorV2Page() {
     }, [ui?.progress]);
 
     const initSession = async () => {
+        // Load from cache first for instant UI
+        const cachedUI = loadUIState<UISchema>(USER_ID);
+        const cachedContext = loadContext<Record<string, unknown>>(USER_ID);
+        const cachedProgress = loadProgress<ProgressData>(USER_ID);
+
+        if (cachedUI) {
+            setUI(cachedUI);
+            setLoading(false);  // Show cached UI immediately
+        }
+        if (cachedContext) {
+            setContext(cachedContext);
+        }
+        if (cachedProgress) {
+            setProgress(cachedProgress);
+        }
+
+        // Then fetch from backend to sync
         try {
-            setLoading(true);
+            if (!cachedUI) setLoading(true);  // Only show loading if no cache
             const res = await fetch(`${BACKEND_URL}/api/tutor/init/${USER_ID}`);
             if (!res.ok) throw new Error("Failed to initialize session");
             const data = await res.json();
+
             setUI(data.ui);
             setContext(data.conversation_context || {});
 
-            // Set initial progress
+            // Save to cache for next time
+            saveUIState(USER_ID, data.ui);
+            saveContext(USER_ID, data.conversation_context || {});
+
+            // Set and cache progress
             if (data.ui?.progress) {
                 setProgress(data.ui.progress);
+                saveProgress(USER_ID, data.ui.progress);
             }
         } catch (err) {
-            setError(err instanceof Error ? err.message : "Unknown error");
+            // If we have cached data, don't show error
+            if (!cachedUI) {
+                setError(err instanceof Error ? err.message : "Unknown error");
+            }
         } finally {
             setLoading(false);
         }
@@ -251,12 +317,14 @@ export default function TutorV2Page() {
             const res = await fetch(`${BACKEND_URL}/api/tutor/progress/${USER_ID}`);
             if (res.ok) {
                 const data = await res.json();
-                setProgress({
+                const progressData = {
                     lifetime_mastery: data.lifetime_mastery,
                     current_section: context.current_section as string,
                     exploration_points: data.exploration_points || 0,
                     sections_progress: data.sections_progress
-                });
+                };
+                setProgress(progressData);
+                saveProgress(USER_ID, progressData);  // Cache for offline access
             }
         } catch (err) {
             console.error("Failed to fetch progress:", err);
@@ -277,8 +345,15 @@ export default function TutorV2Page() {
         return null;  // Already at last section
     };
 
-    // Fetch chat history for a section
+    // Fetch chat history for a section (with localStorage cache)
     const fetchChatHistory = async (sectionId: string) => {
+        // Load from cache immediately for instant UI
+        const cachedMessages = loadMessages<ChatMessage>(USER_ID, sectionId);
+        if (cachedMessages.length > 0) {
+            setChatMessages(cachedMessages);
+        }
+
+        // Then fetch from backend to sync
         try {
             const res = await fetch(`${BACKEND_URL}/api/tutor/chat/history/${USER_ID}/${sectionId}`);
             if (res.ok) {
@@ -291,9 +366,12 @@ export default function TutorV2Page() {
                         : msg.content
                 }));
                 setChatMessages(messages);
+                // Save to cache for offline access
+                saveMessages(USER_ID, sectionId, messages);
             }
         } catch (err) {
             console.error("Failed to fetch chat history:", err);
+            // Cache already loaded above, so UI still works
         }
     };
 
@@ -660,6 +738,24 @@ export default function TutorV2Page() {
         return "Tutor";
     };
 
+    // Determine who the user is talking to based on focused panel and input mode
+    const getTalkingTo = (): "textbook" | "tutor" | "examiner" => {
+        // If ChatPanel is focused, talking to tutor
+        if (isChatFocused) {
+            return "tutor";
+        }
+
+        // If Quiz/MCQ/Exercise is focused
+        if (focusedPanelType === "QuizCard" || focusedPanelType === "MCQCard" || focusedPanelType === "ExercisePanel") {
+            // In answer mode -> talking to examiner
+            // In ask mode -> talking to tutor (asking for hints)
+            return inputMode === "answer" ? "examiner" : "tutor";
+        }
+
+        // Default: main navigation, talking to textbook
+        return "textbook";
+    };
+
     if (loading) {
         return (
             <div className="min-h-screen bg-black flex items-center justify-center">
@@ -818,6 +914,36 @@ export default function TutorV2Page() {
                                         onAddMessages={panel.type === "ChatPanel" ? (newMsgs) => {
                                             setChatMessages(prev => [...prev, ...newMsgs]);
                                         } : undefined}
+                                        onTeachSubconcept={panel.type === "ChatPanel" ? async (subconceptId) => {
+                                            // Extract section from subconcept (7.3.2 → 7.3)
+                                            const parts = subconceptId.split(".");
+                                            const sectionId = parts.slice(0, 2).join(".");
+
+                                            try {
+                                                // Call dedicated teach-subconcept endpoint
+                                                const res = await fetch(`${BACKEND_URL}/api/tutor/teach-subconcept`, {
+                                                    method: "POST",
+                                                    headers: { "Content-Type": "application/json" },
+                                                    body: JSON.stringify({
+                                                        user_id: USER_ID,
+                                                        subconcept_id: subconceptId,
+                                                        section_id: sectionId
+                                                    })
+                                                });
+
+                                                if (!res.ok) throw new Error("Failed to teach subconcept");
+
+                                                const data = await res.json();
+
+                                                // Add explanation to chat messages
+                                                setChatMessages(prev => [...prev, {
+                                                    role: "assistant" as const,
+                                                    content: [{ type: "text", text: data.explanation }]
+                                                }]);
+                                            } catch (err) {
+                                                console.error("Error teaching subconcept:", err);
+                                            }
+                                        } : undefined}
                                         // Exercise-specific props
                                         onExerciseSubmit={panel.type === "ExercisePanel" ? handleExerciseSubmit : undefined}
                                     />
@@ -888,6 +1014,7 @@ export default function TutorV2Page() {
                         hint={ui?.next_prompt}
                         focusTarget={isChatFocused ? "chat" : "tutor"}
                         focusLabel={getFocusLabel()}
+                        talkingTo={getTalkingTo()}
                     />
                 </div>
 

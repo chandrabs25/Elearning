@@ -4,6 +4,12 @@ import { useRef, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Sparkles, MessageCircle, CheckCircle, Brain, Loader2, ArrowRight } from "lucide-react";
 import "katex/dist/katex.min.css";
+import {
+    saveSectionStatus,
+    loadSectionStatus,
+    addPendingOperation,
+    SectionStatus as CachedSectionStatus,
+} from "@/lib/persistence";
 
 // Dynamic import to avoid SSR issues
 import dynamic from "next/dynamic";
@@ -22,9 +28,9 @@ const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:800
 const parseInlineLatex = (text: string): React.ReactNode => {
     if (!text) return null;
 
-    // Combined regex for LaTeX, bold, and italic
-    // Order matters: check bold (**) before italic (*) to avoid conflicts
-    const regex = /\$([^$]+)\$|\*\*([^*]+)\*\*|\*([^*]+)\*/g;
+    // Combined regex for LaTeX (block $$...$$ and inline $...$), bold, and italic
+    // Order matters: check $$ before $ to avoid conflicts, bold (**) before italic (*)
+    const regex = /\$\$([^$]+)\$\$|\$([^$]+)\$|\*\*([^*]+)\*\*|\*([^*]+)\*/g;
     const parts: React.ReactNode[] = [];
     let lastIndex = 0;
     let match;
@@ -37,14 +43,17 @@ const parseInlineLatex = (text: string): React.ReactNode => {
         }
 
         if (match[1]) {
-            // LaTeX: $...$
-            parts.push(<InlineMath key={key++}>{match[1]}</InlineMath>);
+            // Block LaTeX: $$...$$
+            parts.push(<BlockMath key={key++}>{match[1]}</BlockMath>);
         } else if (match[2]) {
-            // Bold: **...**
-            parts.push(<strong key={key++} className="font-semibold text-white">{match[2]}</strong>);
+            // Inline LaTeX: $...$
+            parts.push(<InlineMath key={key++}>{match[2]}</InlineMath>);
         } else if (match[3]) {
+            // Bold: **...**
+            parts.push(<strong key={key++} className="font-semibold text-white">{match[3]}</strong>);
+        } else if (match[4]) {
             // Italic: *...*
-            parts.push(<em key={key++} className="italic text-white/90">{match[3]}</em>);
+            parts.push(<em key={key++} className="italic text-white/90">{match[4]}</em>);
         }
 
         lastIndex = regex.lastIndex;
@@ -155,6 +164,7 @@ interface ChatPanelProps {
     onSuggestionClick?: (suggestion: string) => void;
     onNextSection?: () => void;  // Navigate to next section
     onAddMessages?: (messages: ChatMessage[]) => void;  // Add messages to chat
+    onTeachSubconcept?: (subconceptId: string) => void;  // Teach a specific subconcept via parent's stream
 }
 
 export default function ChatPanel({
@@ -168,6 +178,7 @@ export default function ChatPanel({
     onSuggestionClick,
     onNextSection,
     onAddMessages,
+    onTeachSubconcept,
 }: ChatPanelProps) {
     const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -179,6 +190,9 @@ export default function ChatPanel({
     const [verificationAnswer, setVerificationAnswer] = useState("");
     const [verificationFeedback, setVerificationFeedback] = useState<{ isCorrect: boolean; feedback: string } | null>(null);
     const [isVerifying, setIsVerifying] = useState(false);
+
+    // Track pending next subconcept for manual "Continue" button
+    const [pendingNextSubconcept, setPendingNextSubconcept] = useState<{ id: string; title: string } | null>(null);
 
     // Fetch section status when section changes
     useEffect(() => {
@@ -199,9 +213,22 @@ export default function ChatPanel({
     }, [messages.length, context?.current_section, context?.user_id]);
 
 
+
     const fetchSectionStatus = async () => {
         if (!context?.current_section || !context?.user_id) return;
 
+        // Load from cache immediately for instant button visibility
+        const cached = loadSectionStatus(context.user_id, context.current_section);
+        if (cached && !sectionStatus) {
+            // Only use cache if we don't have fresh data
+            setSectionStatus({
+                ...cached,
+                section_id: context.current_section,
+                concepts: [],  // Cache doesn't store full concepts array
+            });
+        }
+
+        // Then fetch from backend to sync
         try {
             const res = await fetch(
                 `${BACKEND_URL}/api/tutor/section-status/${context.current_section}?user_id=${context.user_id}`
@@ -209,9 +236,18 @@ export default function ChatPanel({
             if (res.ok) {
                 const data = await res.json();
                 setSectionStatus(data);
+                // Save to cache for offline access
+                saveSectionStatus(context.user_id, context.current_section, {
+                    total_count: data.total_count,
+                    explained_count: data.explained_count,
+                    verified_count: data.verified_count,
+                    all_explained: data.all_explained,
+                    all_verified: data.all_verified,
+                });
             }
         } catch (err) {
             console.error("Failed to fetch section status:", err);
+            // Cache already loaded above, so button still works
         }
     };
 
@@ -276,22 +312,16 @@ export default function ChatPanel({
                 // Refresh section status
                 await fetchSectionStatus();
 
-                if (data.is_correct && data.next_subconcept_explanation) {
-                    // Add the next subconcept explanation as a message
-                    const explanationMessage = {
-                        role: "assistant" as const,
-                        content: `✅ Great job! Now let's learn about **${data.next_subconcept_title}**:\n\n${data.next_subconcept_explanation}`
-                    };
-                    onAddMessages?.([explanationMessage]);
-
-                    // Close verification modal after a short delay
-                    setTimeout(() => {
-                        setIsCheckingUnderstanding(false);
-                        setVerificationQuestion(null);
-                        setVerificationFeedback(null);
-                    }, 1500);
+                // Store pending next subconcept for manual "Continue" button
+                if (data.is_correct && data.next_subconcept_id) {
+                    setPendingNextSubconcept({
+                        id: data.next_subconcept_id,
+                        title: data.next_subconcept_title || data.next_subconcept_id
+                    });
+                    // User must click "Continue" button to proceed
                 } else if (data.all_verified) {
                     // All subconcepts verified - show section complete message
+                    setPendingNextSubconcept(null);
                     const completeMessage = data.next_section_id
                         ? `🎉 **Section Complete!** You've mastered all concepts in this section.\n\nReady to continue to **${data.next_section_title || data.next_section_id}**?`
                         : `🎉 **Section Complete!** You've mastered all concepts in this section.`;
@@ -305,6 +335,7 @@ export default function ChatPanel({
                     }, 2000);
                 } else if (data.next_question) {
                     // Move to next verification question after showing feedback
+                    setPendingNextSubconcept(null);
                     setTimeout(() => {
                         setVerificationQuestion(data.next_question);
                         setCurrentVerifyConceptId(data.next_concept?.id);
@@ -315,6 +346,15 @@ export default function ChatPanel({
 
         } catch (err) {
             console.error("Failed to verify understanding:", err);
+            // Queue for retry when reconnected
+            addPendingOperation({
+                type: "verify",
+                payload: {
+                    user_id: context.user_id,
+                    concept_id: currentVerifyConceptId,
+                    answer: verificationAnswer
+                }
+            });
         } finally {
             setIsVerifying(false);
         }
@@ -326,6 +366,27 @@ export default function ChatPanel({
         setCurrentVerifyConceptId(null);
         setVerificationAnswer("");
         setVerificationFeedback(null);
+        setPendingNextSubconcept(null);
+    };
+
+    // Handler for "Continue to Next Concept" button - delegates to parent via callback
+    const continueToNextSubconcept = async () => {
+        if (!pendingNextSubconcept) return;
+
+        // Delegate to parent component which handles streaming properly
+        if (onTeachSubconcept) {
+            onTeachSubconcept(pendingNextSubconcept.id);
+        } else {
+            // Fallback: use suggestion click to trigger teaching
+            onSuggestionClick?.(`teach me ${pendingNextSubconcept.id}`);
+        }
+
+        // Close the verification modal
+        setIsCheckingUnderstanding(false);
+        setVerificationQuestion(null);
+        setVerificationFeedback(null);
+        setPendingNextSubconcept(null);
+        await fetchSectionStatus();
     };
 
     // Auto-scroll to bottom when messages change - scroll the container, not the element
@@ -450,15 +511,14 @@ export default function ChatPanel({
                                     {verificationFeedback.isCorrect ? (
                                         <>
                                             <button
-                                                onClick={() => {
-                                                    setIsCheckingUnderstanding(false);
-                                                    setVerificationFeedback(null);
-                                                    fetchSectionStatus();
-                                                }}
-                                                className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-green-500/20 border border-green-500/30 rounded-xl text-green-400 hover:bg-green-500/30 transition-colors"
+                                                onClick={continueToNextSubconcept}
+                                                disabled={!pendingNextSubconcept}
+                                                className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-green-500/20 border border-green-500/30 rounded-xl text-green-400 hover:bg-green-500/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                                             >
                                                 <ArrowRight className="w-4 h-4" />
-                                                Continue to Next Concept
+                                                {pendingNextSubconcept
+                                                    ? `Continue to: ${pendingNextSubconcept.title}`
+                                                    : "Section Complete!"}
                                             </button>
                                         </>
                                     ) : (

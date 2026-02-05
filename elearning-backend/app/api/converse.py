@@ -857,8 +857,7 @@ async def chat_panel_message(req: ChatPanelRequest):
         "main_concept_title": None,
         # Verification state
         "pending_verification_concept": persisted_tutor_state.get("pending_verification_concept"),
-        "pending_verification_title": None,
-        "verification_question": None
+        "pending_verification_title": None
     }
 
     
@@ -1162,15 +1161,25 @@ async def handle_start_topic(user_id: str, message: str, context: dict) -> Conve
             await update_current_concept(user_id, section_id)
             return await _build_explanation_response(user_id, section, context)
     
-    # 2. Check if message contains a direct section ID (e.g., "7.2", "teach me 7.2")
+    # 2. Check if message contains a direct section/subconcept ID (e.g., "7.2", "7.3.1")
     #    This MUST come before fuzzy search to handle NavigationMap/ProgressBar clicks
     words = message.split()
     for word in words:
         if word.startswith("7."):
+            # Try direct section match first
             section = get_section_by_id(word)
             if section:
                 await update_current_concept(user_id, word)
                 return await _build_explanation_response(user_id, section, context)
+            
+            # If not found, try extracting parent section from subconcept ID (7.3.1 → 7.3)
+            parts = word.split(".")
+            if len(parts) >= 3:  # e.g., "7.3.1" has 3 parts
+                parent_section_id = ".".join(parts[:2])  # "7.3"
+                section = get_section_by_id(parent_section_id)
+                if section:
+                    await update_current_concept(user_id, parent_section_id)
+                    return await _build_explanation_response(user_id, section, context)
     
     # 3. Fallback: Try fuzzy search for topic name (for natural language requests)
     matches = search_sections_by_topic(message)
@@ -1338,7 +1347,7 @@ async def handle_show_progress(user_id: str, user_state: dict, context: dict) ->
 
 async def handle_answer(user_id: str, answer: str, context: dict) -> ConversationResponse:
     """Handle quiz/MCQ answer evaluation."""
-    from app.graph.user_state import create_insight_with_supersede
+    from app.graph.user_state import reconcile_insights
     
     question_type = context.get("question_type", "open")
     concept_id = context.get("current_section", DEFAULT_SECTION_ID)
@@ -1348,6 +1357,10 @@ async def handle_answer(user_id: str, answer: str, context: dict) -> Conversatio
         question = context.get("question", "")
         options = context.get("options", [])  # The list of option texts
         correct_option = context.get("correct_option", "")  # e.g., "B" or "Option B"
+        
+        # Generate unique source_id for this MCQ (hash of question)
+        import hashlib
+        mcq_source_id = f"mcq-{hashlib.md5(question[:100].encode()).hexdigest()[:8]}"
         
         # Use LLM to evaluate - it can judge reasoning even if letter is wrong
         evaluation = await evaluate_mcq_answer(
@@ -1361,7 +1374,7 @@ async def handle_answer(user_id: str, answer: str, context: dict) -> Conversatio
         is_partial = evaluation["is_partial"]
         feedback = evaluation["feedback"]
         
-        # Create insight linked to current section (auto-supersedes contradicting insights)
+        # Create insight using LLM reconciliation (intelligently merges/supersedes)
         try:
             insight_type = "COMPETENCY" if is_correct else "MISCONCEPTION"
             # Generate concise insight content from feedback
@@ -1370,18 +1383,21 @@ async def handle_answer(user_id: str, answer: str, context: dict) -> Conversatio
             else:
                 insight_content = f"Struggled with MCQ: {feedback[:100]}..." if len(feedback) > 100 else f"Struggled with MCQ: {feedback}"
             
-            result = await create_insight_with_supersede(
+            result = await reconcile_insights(
                 user_id=user_id,
+                new_content=insight_content,
                 insight_type=insight_type,
-                content=insight_content,
                 concept_ids=[concept_id],  # Link to current section
+                source_type="mcq",
+                source_id=mcq_source_id,
                 confidence=0.85
             )
-            superseded = result.get("superseded_count", 0)
-            print(f"[MCQ] Created {insight_type} insight for section {concept_id} (superseded {superseded})")
+            action = result.get("action", "CREATE_NEW")
+            print(f"[MCQ] Created {insight_type} insight for section {concept_id} (action: {action})")
         except Exception as e:
             print(f"Error creating MCQ insight: {e}")
         
+
 
         # Score based on correctness
         if is_correct:
@@ -1573,12 +1589,16 @@ async def handle_quiz_request(user_id: str, message: str, user_state: dict, cont
 async def handle_quiz_answer(user_id: str, answer: str, context: dict) -> ConversationResponse:
     """Handle quiz answer submitted via the input bar in Answer mode."""
     from app.agents.tutor_agent import evaluate_quiz_answer
-    from app.graph.user_state import create_insight_with_supersede
+    from app.graph.user_state import reconcile_insights
+    import hashlib
     
     # Get quiz context from the conversation context
     question = context.get("question", "")
     solution = context.get("solution_meta") or context.get("solution_latex") or ""
     concept_id = context.get("current_section") or DEFAULT_SECTION_ID
+    
+    # Generate unique source_id for this quiz question
+    quiz_source_id = f"quiz-{hashlib.md5(question[:100].encode()).hexdigest()[:8]}"
     
     if not question:
         # No active quiz question
@@ -1603,20 +1623,22 @@ async def handle_quiz_answer(user_id: str, answer: str, context: dict) -> Conver
     is_partial = evaluation["is_partial"]
     feedback_msg = evaluation["feedback"]
     
-    # Create insight linked to current section (auto-supersedes contradicting insights)
+    # Create insight using LLM reconciliation (intelligently merges/supersedes)
     try:
         insight_type = "COMPETENCY" if is_correct else "MISCONCEPTION"
         insight_content = evaluation.get("insight_content", f"{'Completed' if is_correct else 'Attempted'} quiz on {concept_id}")
         
-        result = await create_insight_with_supersede(
+        result = await reconcile_insights(
             user_id=user_id,
+            new_content=insight_content,
             insight_type=insight_type,
-            content=insight_content,
             concept_ids=[concept_id],  # Link to current section
+            source_type="quiz",
+            source_id=quiz_source_id,
             confidence=0.85
         )
-        superseded = result.get("superseded_count", 0)
-        print(f"[Quiz] Created {insight_type} insight for section {concept_id} (superseded {superseded})")
+        action = result.get("action", "CREATE_NEW")
+        print(f"[Quiz] Created {insight_type} insight for section {concept_id} (action: {action})")
     except Exception as e:
         print(f"Error creating quiz insight: {e}")
     
@@ -2478,27 +2500,9 @@ async def _build_explanation_response(
     ui.input_placeholder = input_placeholder
     ui.suggested_actions = suggested_actions
     
-    # Save explanation to chat history for conversation continuity
-    try:
-        # Create a text summary of what was explained
-        explanation_text = f"📚 **{section_title}**\n\n"
-        # Extract text content from the formatted content
-        for item in content[:3]:  # Limit to first 3 items to avoid huge messages
-            if isinstance(item, dict):
-                item_content = item.get("content", "")
-                if isinstance(item_content, str) and item_content:
-                    # Truncate long content
-                    truncated = item_content[:500] + "..." if len(item_content) > 500 else item_content
-                    explanation_text += truncated + "\n\n"
-        
-        await save_chat_message(
-            user_id=user_id,
-            section_id=section_id,
-            role="assistant",
-            content=[{"type": "text", "text": explanation_text.strip()}]
-        )
-    except Exception as e:
-        print(f"Error saving explanation to chat history: {e}")
+    # NOTE: We intentionally don't save section content to chat history here
+    # Section content is shown in ExplanationPanel, not ChatPanel
+    # Only actual conversations (questions/answers) should be in chat history
     
     return ConversationResponse(
         ui=ui,
@@ -2908,7 +2912,7 @@ async def evaluate_exercise(request: ExerciseEvaluationRequest):
     """Evaluate student answer against exercise solution using LLM."""
     from app.agents.tutor_agent import evaluate_quiz_answer
     from app.chains.content import get_exercise_with_solution, get_exercises_by_section_mapping
-    from app.graph.user_state import create_insight_with_supersede
+    from app.graph.user_state import reconcile_insights
     
     exercise = get_exercise_with_solution(request.exercise_label)
     if not exercise:
@@ -2933,7 +2937,7 @@ async def evaluate_exercise(request: ExerciseEvaluationRequest):
         "comparison": f"Your answer was {'correct' if eval_result.get('is_correct') else 'partially correct' if eval_result.get('is_partial') else 'incorrect'}."
     }
     
-    # Create insight linked to parent section (auto-supersedes contradicting insights)
+    # Create insight using LLM reconciliation (intelligently merges/supersedes)
     try:
         # Get exercise → section mapping (inverted: exercise_label → [section_ids])
         exercise_section_map = {
@@ -2953,15 +2957,17 @@ async def evaluate_exercise(request: ExerciseEvaluationRequest):
         insight_type = "COMPETENCY" if result["is_correct"] else "MISCONCEPTION"
         insight_content = eval_result.get("insight_content", f"{'Completed' if result['is_correct'] else 'Attempted'} exercise {request.exercise_label}")
         
-        insight_result = await create_insight_with_supersede(
+        insight_result = await reconcile_insights(
             user_id=request.user_id,
+            new_content=insight_content,
             insight_type=insight_type,
-            content=insight_content,
             concept_ids=parent_sections,  # Link to parent section(s)
+            source_type="exercise",
+            source_id=request.exercise_label,  # Use exercise label as source_id
             confidence=0.85
         )
-        superseded = insight_result.get("superseded_count", 0)
-        print(f"[Exercise] Created {insight_type} insight for {request.exercise_label} → sections {parent_sections} (superseded {superseded})")
+        action = insight_result.get("action", "CREATE_NEW")
+        print(f"[Exercise] Created {insight_type} insight for {request.exercise_label} → sections {parent_sections} (action: {action})")
     except Exception as e:
         print(f"Error creating exercise insight: {e}")
     
@@ -3086,9 +3092,8 @@ class VerifyUnderstandingResponse(BaseModel):
     next_question: str | None
     all_verified: bool
     section_id: str
-    # New fields for auto-continue flow
-    next_subconcept_explanation: str | None = None  # Explanation of next subconcept to teach
-    next_subconcept_id: str | None = None  # ID of next subconcept being taught
+    # Fields for "Continue" button - actual explanation comes from /teach-subconcept endpoint
+    next_subconcept_id: str | None = None  # ID of next subconcept to teach
     next_subconcept_title: str | None = None  # Title of next subconcept
     next_section_id: str | None = None  # Next section if all verified
     next_section_title: str | None = None  # Title of next section
@@ -3132,7 +3137,7 @@ FEEDBACK: [Your constructive feedback]"""
     feedback = eval_text.split("FEEDBACK:")[-1].strip() if "FEEDBACK:" in eval_text else eval_text
     
     # Generate LLM-based insight content
-    from app.graph.user_state import create_insight
+    from app.graph.user_state import reconcile_insights
     
     if is_correct:
         # Generate COMPETENCY insight with LLM
@@ -3166,12 +3171,14 @@ Respond with ONLY the summary sentence."""
         misconception_response = await llm.ainvoke([HumanMessage(content=misconception_prompt)])
         misconception_content = misconception_response.content.strip().strip('"')
         
-        # Create MISCONCEPTION insight
-        await create_insight(
+        # Create MISCONCEPTION insight using LLM reconciliation
+        await reconcile_insights(
             user_id=request.user_id,
+            new_content=misconception_content,
             insight_type="MISCONCEPTION",
-            content=misconception_content,
             concept_ids=[request.concept_id],
+            source_type="verification",
+            source_id=request.concept_id,  # Use concept_id as source for verification
             confidence=0.8
         )
         
@@ -3179,6 +3186,7 @@ Respond with ONLY the summary sentence."""
         from app.graph.user_state import schedule_retry_verification
         await schedule_retry_verification(request.user_id, request.concept_id)
         print(f"[Verification] Failed: {request.concept_id} → scheduled for retry")
+
 
     
     # Get section ID from concept ID
@@ -3190,7 +3198,6 @@ Respond with ONLY the summary sentence."""
     
     next_concept = None
     next_question = None
-    next_subconcept_explanation = None
     next_subconcept_id = None
     next_subconcept_title = None
     next_section_id = None
@@ -3224,48 +3231,18 @@ Respond with ONLY the question."""
         next_question = q_response.content
 
     
-    # If verification passed, check if we should teach the next subconcept
+    # If verification passed, check if there's a next subconcept to teach
+    # NOTE: We do NOT auto-generate the explanation here - let user click "Continue" to proceed
     if is_correct:
-        from app.graph.user_state import get_first_unexplained_subconcept, mark_concept_explained
+        from app.graph.user_state import get_first_unexplained_subconcept
         
-        # Find next unexplained subconcept
+        # Find next unexplained subconcept (just the ID/title, not the explanation)
         next_unexplained = await get_first_unexplained_subconcept(request.user_id, section_id)
         
         if next_unexplained:
-            # Generate explanation for next subconcept
+            # Return next subconcept info for "Continue" button
             next_subconcept_id = next_unexplained["id"]
             next_subconcept_title = next_unexplained["title"]
-            
-            # Get section content for context
-            section = get_section_by_id(section_id)
-            section_content = ""
-            if section and section.get("content"):
-                for item in section["content"]:
-                    if item.get("type") == "text":
-                        section_content += item.get("body", "") + "\n"
-                    elif item.get("type") == "list_item":
-                        section_content += f"{item.get('label', '')}: {item.get('body', '')}\n"
-            
-            # Generate explanation
-            explain_prompt = f"""You are a friendly physics tutor. Explain the concept "{next_subconcept_title}" from the section "{section.get('section_title', section_id) if section else section_id}".
-
-Context from textbook:
-{section_content[:3000]}
-
-Requirements:
-1. Focus ONLY on "{next_subconcept_title}"
-2. Explain clearly and concisely
-3. Use simple language suitable for a student
-4. Include any relevant formulas or examples
-5. Keep the explanation focused (2-3 paragraphs max)
-
-Start with a brief introduction to this concept."""
-
-            explain_response = await llm.ainvoke([HumanMessage(content=explain_prompt)])
-            next_subconcept_explanation = explain_response.content
-            
-            # Mark this subconcept as explained
-            await mark_concept_explained(request.user_id, next_subconcept_id)
         
         elif status["all_verified"]:
             # All subconcepts verified - get next section
@@ -3282,9 +3259,216 @@ Start with a brief introduction to this concept."""
         next_question=next_question,
         all_verified=status["all_verified"],
         section_id=section_id,
-        next_subconcept_explanation=next_subconcept_explanation,
         next_subconcept_id=next_subconcept_id,
         next_subconcept_title=next_subconcept_title,
         next_section_id=next_section_id,
         next_section_title=next_section_title
+    )
+
+
+# ============================================================================
+# TEACH SUBCONCEPT ENDPOINT - Dedicated endpoint for progressive teaching
+# ============================================================================
+
+class TeachSubconceptRequest(BaseModel):
+    user_id: str
+    subconcept_id: str  # e.g., "7.3.2"
+    section_id: str     # e.g., "7.3"
+
+
+class TeachSubconceptResponse(BaseModel):
+    explanation: str
+    subconcept_id: str
+    subconcept_title: str
+    progress: dict  # {explained: int, verified: int, total: int}
+    all_explained: bool
+    all_verified: bool
+
+
+@router.post("/tutor/teach-subconcept")
+async def teach_subconcept(request: TeachSubconceptRequest):
+    """Dedicated endpoint to teach a specific subconcept.
+    
+    This endpoint:
+    1. Fetches subconcept details from Neo4j
+    2. Generates a focused explanation using LLM
+    3. Marks the subconcept as explained
+    4. Returns the explanation with progress info
+    
+    Used by the "Continue to next" button after verification.
+    """
+    from app.config import settings
+    from langchain_groq import ChatGroq
+    from langchain_core.messages import SystemMessage, HumanMessage
+    from app.graph.user_state import (
+        mark_concept_explained,
+        get_section_learning_status,
+        get_subconcepts_for_section,
+        get_insights_for_concept,
+        get_prerequisite_insights
+    )
+    from app.chains.content import get_section_by_id, format_content_for_ui
+    
+    user_id = request.user_id
+    subconcept_id = request.subconcept_id
+    section_id = request.section_id
+    
+    # Get section content for context
+    section = get_section_by_id(section_id)
+    if not section:
+        raise HTTPException(status_code=404, detail=f"Section {section_id} not found")
+    
+    section_title = section.get("section_title", section_id)
+    section_content = format_content_for_ui(section)
+    section_text = "\n".join([item.get("content", "") for item in section_content if isinstance(item, dict)])[:1500]
+    
+    # Get all subconcepts to find the one we're teaching
+    all_subconcepts = await get_subconcepts_for_section(section_id)
+    
+    # Find the target subconcept
+    target_subconcept = None
+    subconcept_index = 0
+    for i, sc in enumerate(all_subconcepts):
+        if sc["id"] == subconcept_id:
+            target_subconcept = sc
+            subconcept_index = i
+            break
+    
+    if not target_subconcept:
+        raise HTTPException(status_code=404, detail=f"Subconcept {subconcept_id} not found")
+    
+    subconcept_title = target_subconcept.get("title", subconcept_id)
+    subconcept_description = target_subconcept.get("description", "")
+    
+    # Fetch insights for personalized teaching
+    concept_insights = await get_insights_for_concept(user_id, section_id)
+    prereq_insights = await get_prerequisite_insights(user_id, section_id)
+    
+    # Build insight context for the LLM
+    insight_context = ""
+    if concept_insights:
+        insight_lines = []
+        for insight in concept_insights:
+            insight_type = insight.get("type")
+            content = insight.get("content", "")
+            source_type = insight.get("source_type")
+            source_id = insight.get("source_id")
+            source_suffix = f" (from {source_type} {source_id})" if source_type and source_id else ""
+            
+            if insight_type == "MISCONCEPTION":
+                insight_lines.append(f"- ⚠️ Previous struggle{source_suffix}: {content}")
+            elif insight_type == "COMPETENCY":
+                insight_lines.append(f"- ✅ Demonstrated understanding{source_suffix}: {content}")
+            elif insight_type == "PREFERENCE":
+                insight_lines.append(f"- 💡 Preference: {content}")
+        if insight_lines:
+            insight_context = "\n**Student History:**\n" + "\n".join(insight_lines)
+    
+    # Build prerequisite context
+    prereq_context = ""
+    if prereq_insights:
+        prereq_lines = []
+        for p in prereq_insights:
+            status = "✅ Taught & Verified" if p["is_verified"] else ("📚 Taught" if p["is_taught"] else "❌ Not yet covered")
+            prereq_lines.append(f"- {p['title']}: {status}")
+            for insight in p.get("insights", []):
+                insight_type = insight.get("type")
+                content = insight.get("content", "")
+                if insight_type == "MISCONCEPTION":
+                    prereq_lines.append(f"    ⚠️ Struggled: {content}")
+                elif insight_type == "COMPETENCY":
+                    prereq_lines.append(f"    ✅ Strong: {content}")
+        if prereq_lines:
+            prereq_context = "\n**Prerequisite Knowledge Status:**\n" + "\n".join(prereq_lines)
+    
+    full_insight_context = insight_context + prereq_context
+    print(f"[teach-subconcept] Insight context for {subconcept_id}: {len(full_insight_context)} chars")
+    
+    # Generate explanation using LLM
+    llm = ChatGroq(
+        model="llama-3.3-70b-versatile",
+        temperature=0.5,
+        api_key=settings.groq_api_key
+    )
+    
+    system_prompt = f"""You are an AI physics tutor teaching a student about this topic.
+
+═══════════════════════════════════════════════════════════════
+TEACHING TARGET: "{subconcept_title}" (Subconcept {subconcept_index + 1}/{len(all_subconcepts)})
+═══════════════════════════════════════════════════════════════
+
+**SECTION:** {section_title}
+**SUBCONCEPT:** {subconcept_title}
+{f"**DESCRIPTION:** {subconcept_description}" if subconcept_description else ""}
+{full_insight_context if full_insight_context else ""}
+
+Reference material (for context ONLY):
+---
+{section_text}
+---
+
+═══════════ CRITICAL RULES ═══════════
+1. ONLY explain "{subconcept_title}" - nothing else from this section
+2. Keep explanation to 2-3 short paragraphs maximum
+3. Start with: "Let's learn about **{subconcept_title}**."
+4. Use LaTeX for equations: $$equation$$
+5. Do NOT explain other topics or concepts
+6. Do NOT ask follow-up questions - just explain clearly
+7. End naturally (verification will be handled separately)
+8. If student history shows misconceptions, proactively address them
+9. If student history shows competencies, build on their strengths
+
+FORBIDDEN: Do not teach the entire section. Focus ONLY on this single sub-concept.
+"""
+    
+    response = await llm.ainvoke([
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=f"Please teach me about {subconcept_title}")
+    ])
+    
+    explanation = response.content
+    
+    # Save to chat history so it persists on reload
+    await save_chat_message(
+        user_id=user_id,
+        section_id=section_id,
+        role="user",
+        content=f"Teach me about {subconcept_title}"
+    )
+    await save_chat_message(
+        user_id=user_id,
+        section_id=section_id,
+        role="assistant",
+        content=explanation
+    )
+    print(f"[teach-subconcept] Saved explanation to chat history for {subconcept_id}")
+    
+    # Mark subconcept as explained
+    await mark_concept_explained(user_id, subconcept_id)
+    print(f"[teach-subconcept] Marked {subconcept_id} as explained for {user_id}")
+    
+    # Get updated progress
+    section_status = await get_section_learning_status(user_id, section_id)
+    
+    progress = {
+        "explained": section_status.get("explained_count", 0),
+        "verified": section_status.get("verified_count", 0),
+        "total": section_status.get("total_count", len(all_subconcepts))
+    }
+    
+    # Add progress info to explanation
+    progress_text = f"\n\n📊 **Progress:** {progress['explained']}/{progress['total']} concepts covered"
+    
+    if not section_status.get("all_verified"):
+        progress_text += "\n\n💡 *When you're ready, click the 'Check Understanding' button to verify!*"
+    
+    explanation += progress_text
+    
+    return TeachSubconceptResponse(
+        explanation=explanation,
+        subconcept_id=subconcept_id,
+        subconcept_title=subconcept_title,
+        progress=progress,
+        all_explained=section_status.get("all_explained", False),
+        all_verified=section_status.get("all_verified", False)
     )

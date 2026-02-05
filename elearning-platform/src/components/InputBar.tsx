@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Send, Sparkles, MessageCircle, BookOpen, Mic, MicOff, Volume2 } from "lucide-react";
 
 type FocusTarget = "tutor" | "chat" | null;
+type TalkingTo = "textbook" | "tutor" | "examiner";
 
 interface InputBarProps {
     placeholder?: string;
@@ -13,6 +14,7 @@ interface InputBarProps {
     hint?: string | null;
     focusTarget?: FocusTarget;
     focusLabel?: string;
+    talkingTo?: TalkingTo;
 }
 
 // Type for SpeechRecognition (not available in all browsers)
@@ -27,7 +29,7 @@ interface SpeechRecognitionErrorEvent extends Event {
 }
 
 const InputBar = forwardRef<HTMLInputElement, InputBarProps>(
-    ({ placeholder = "Talk to me...", onSend, isProcessing, hint, focusTarget = "tutor", focusLabel }, ref) => {
+    ({ placeholder = "Talk to me...", onSend, isProcessing, hint, focusTarget = "tutor", focusLabel, talkingTo = "textbook" }, ref) => {
         const [value, setValue] = useState("");
         const [isListening, setIsListening] = useState(false);
         const [speechSupported, setSpeechSupported] = useState(false);
@@ -174,6 +176,19 @@ const InputBar = forwardRef<HTMLInputElement, InputBarProps>(
             }
         };
 
+        const getTalkingToLabel = () => {
+            switch (talkingTo) {
+                case "textbook":
+                    return { text: "Talking to the Textbook", icon: "📖", bgColor: "bg-blue-500/20", textColor: "text-blue-300" };
+                case "tutor":
+                    return { text: "Talking to the Tutor", icon: "🎓", bgColor: "bg-green-500/20", textColor: "text-green-300" };
+                case "examiner":
+                    return { text: "Talking to the Examiner", icon: "📝", bgColor: "bg-amber-500/20", textColor: "text-amber-300" };
+                default:
+                    return { text: "Talking to the Textbook", icon: "📖", bgColor: "bg-blue-500/20", textColor: "text-blue-300" };
+            }
+        };
+
         return (
             <div className="flex-shrink-0 border-t border-white/5 bg-black/80 backdrop-blur-xl py-3 px-4">
                 <div className="max-w-3xl mx-auto">
@@ -200,6 +215,19 @@ const InputBar = forwardRef<HTMLInputElement, InputBarProps>(
                             </motion.div>
                         )}
                     </AnimatePresence>
+
+                    {/* Talking To Indicator */}
+                    <motion.div
+                        key={talkingTo}
+                        initial={{ opacity: 0, y: 5 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="flex items-center justify-center mb-2"
+                    >
+                        <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs ${getTalkingToLabel().bgColor} ${getTalkingToLabel().textColor}`}>
+                            <span>{getTalkingToLabel().icon}</span>
+                            <span>{getTalkingToLabel().text}</span>
+                        </div>
+                    </motion.div>
 
                     {/* Input with Voice */}
                     <form onSubmit={handleSubmit} className="relative">

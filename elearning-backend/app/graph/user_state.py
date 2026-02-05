@@ -381,15 +381,23 @@ async def save_session_summary(user_id: str, summary: str) -> None:
 
 
 async def get_last_session(user_id: str) -> dict | None:
-    """Get user's most recent session summary."""
-    query = """
-    MATCH (u:User {id: $user_id})-[:HAS_SESSION]->(s:Session)
-    RETURN s.summary as summary, s.created_at as created_at
-    ORDER BY s.created_at DESC
-    LIMIT 1
+    """Get user's most recent session summary.
+    
+    NOTE: Session tracking is not currently implemented (Session nodes aren't created).
+    Returning None to avoid Neo4j warnings about missing labels/relationships.
     """
-    results = await neo4j_client.execute_read(query, user_id=user_id)
-    return results[0] if results else None
+    # Session nodes aren't being created yet - skip query to avoid warnings
+    return None
+    
+    # When Session tracking is implemented, uncomment this:
+    # query = """
+    # MATCH (u:User {id: $user_id})-[:HAS_SESSION]->(s:Session)
+    # RETURN s.summary as summary, s.created_at as created_at
+    # ORDER BY s.created_at DESC
+    # LIMIT 1
+    # """
+    # results = await neo4j_client.execute_read(query, user_id=user_id)
+    # return results[0] if results else None
 
 
 # === Insight Management Functions ===
@@ -399,7 +407,9 @@ async def create_insight(
     insight_type: str,  # COMPETENCY, MISCONCEPTION, PREFERENCE
     content: str,
     concept_ids: list[str],
-    confidence: float = 1.0
+    confidence: float = 1.0,
+    source_type: str | None = None,  # NEW: "exercise", "quiz", "mcq", "verification"
+    source_id: str | None = None  # NEW: Specific question/exercise ID
 ) -> dict:
     """Create a new Insight node and link it to the user and concepts.
     
@@ -409,6 +419,8 @@ async def create_insight(
         content: Description of the insight
         concept_ids: List of concept IDs this insight is about
         confidence: How certain the agent is about this insight (0.0-1.0)
+        source_type: Optional source type (exercise, quiz, mcq, verification)
+        source_id: Optional specific ID of the source object
     
     Returns:
         The created insight with its ID
@@ -418,6 +430,7 @@ async def create_insight(
     insight_id = f"insight-{uuid.uuid4().hex[:12]}"
     
     # Create insight node and link to user
+    # Include source_type and source_id if provided
     query = """
     MATCH (u:User {id: $user_id})
     CREATE (i:Insight {
@@ -425,6 +438,8 @@ async def create_insight(
         type: $insight_type,
         content: $content,
         confidence: $confidence,
+        source_type: $source_type,
+        source_id: $source_id,
         created_at: datetime()
     })
     MERGE (u)-[:HAS_INSIGHT]->(i)
@@ -432,7 +447,9 @@ async def create_insight(
     UNWIND $concept_ids AS concept_id
     MATCH (c:Concept {id: concept_id})
     MERGE (i)-[:ABOUT]->(c)
-    RETURN i.id as id, i.type as type, i.content as content, i.created_at as created_at
+    RETURN i.id as id, i.type as type, i.content as content, 
+           i.source_type as source_type, i.source_id as source_id,
+           i.created_at as created_at
     """
     
     results = await neo4j_client.execute_read(
@@ -442,7 +459,9 @@ async def create_insight(
         insight_type=insight_type,
         content=content,
         confidence=confidence,
-        concept_ids=concept_ids
+        concept_ids=concept_ids,
+        source_type=source_type,
+        source_id=source_id
     )
     
     # Invalidate user state cache
@@ -453,33 +472,49 @@ async def create_insight(
             "id": results[0]["id"],
             "type": results[0]["type"],
             "content": results[0]["content"],
+            "source_type": results[0]["source_type"],
+            "source_id": results[0]["source_id"],
             "created_at": str(results[0]["created_at"]) if results[0]["created_at"] else None
         }
-    return {"id": insight_id, "type": insight_type, "content": content}
+    return {"id": insight_id, "type": insight_type, "content": content, "source_type": source_type, "source_id": source_id}
 
 
-async def get_insights_for_concept(user_id: str, concept_id: str) -> list[dict]:
+
+
+async def get_insights_for_concept(user_id: str, concept_id: str, include_subconcepts: bool = True) -> list[dict]:
     """Get all active insights for a user related to a specific concept.
     
     Returns insights that are:
     1. Linked to the user
-    2. About the specified concept
+    2. About the specified concept OR its subconcepts (if include_subconcepts=True)
     3. Not superseded by a newer insight
+    
+    Also includes object-level insights (exercises, MCQs, quizzes) that are linked
+    to the section via their source_id matching the section prefix.
     
     Args:
         user_id: The user's ID
-        concept_id: The concept to get insights for
+        concept_id: The concept to get insights for (e.g., "7.2")
+        include_subconcepts: Whether to include insights from subconcepts like 7.2.1, 7.2.2
     
     Returns:
-        List of insight dictionaries
+        List of insight dictionaries with source info
     """
+    # Build section prefix for subconcept matching
+    section_prefix = concept_id + "."
+    
     query = """
-    MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(i:Insight)-[:ABOUT]->(c:Concept {id: $concept_id})
+    // Get insights directly about this concept or its subconcepts
+    MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(i:Insight)-[:ABOUT]->(c:Concept)
     WHERE i.superseded_by IS NULL
+      AND (c.id = $concept_id OR ($include_sub AND c.id STARTS WITH $section_prefix))
     RETURN i.id as id, 
            i.type as type, 
            i.content as content, 
            i.confidence as confidence,
+           i.source_type as source_type,
+           i.source_id as source_id,
+           c.id as concept_id,
            i.created_at as created_at
     ORDER BY i.created_at DESC
     """
@@ -487,7 +522,9 @@ async def get_insights_for_concept(user_id: str, concept_id: str) -> list[dict]:
     results = await neo4j_client.execute_read(
         query,
         user_id=user_id,
-        concept_id=concept_id
+        concept_id=concept_id,
+        section_prefix=section_prefix,
+        include_sub=include_subconcepts
     )
     
     return [
@@ -496,6 +533,62 @@ async def get_insights_for_concept(user_id: str, concept_id: str) -> list[dict]:
             "type": r["type"],
             "content": r["content"],
             "confidence": r["confidence"],
+            "source_type": r["source_type"],
+            "source_id": r["source_id"],
+            "concept_id": r["concept_id"],
+            "created_at": str(r["created_at"]) if r["created_at"] else None
+        }
+        for r in results
+    ] if results else []
+
+
+async def get_insights_by_source(
+    user_id: str, 
+    source_type: str, 
+    source_id: str
+) -> list[dict]:
+    """Get all active insights for a user linked to a specific source object.
+    
+    This enables object-level insight lookup (e.g., all insights from exercise 7.5).
+    
+    Args:
+        user_id: The user's ID
+        source_type: The source type (exercise, quiz, mcq, verification)
+        source_id: The specific source ID
+    
+    Returns:
+        List of insight dictionaries matching the source
+    """
+    query = """
+    MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(i:Insight)
+    WHERE i.superseded_by IS NULL
+      AND i.source_type = $source_type
+      AND i.source_id = $source_id
+    RETURN i.id as id, 
+           i.type as type, 
+           i.content as content, 
+           i.confidence as confidence,
+           i.source_type as source_type,
+           i.source_id as source_id,
+           i.created_at as created_at
+    ORDER BY i.created_at DESC
+    """
+    
+    results = await neo4j_client.execute_read(
+        query,
+        user_id=user_id,
+        source_type=source_type,
+        source_id=source_id
+    )
+    
+    return [
+        {
+            "id": r["id"],
+            "type": r["type"],
+            "content": r["content"],
+            "confidence": r["confidence"],
+            "source_type": r["source_type"],
+            "source_id": r["source_id"],
             "created_at": str(r["created_at"]) if r["created_at"] else None
         }
         for r in results
@@ -574,74 +667,231 @@ async def supersede_insight(old_insight_id: str, new_insight_id: str) -> bool:
     return bool(results)
 
 
-async def create_insight_with_supersede(
+# NOTE: create_insight_with_supersede was removed - replaced by reconcile_insights
+# which uses LLM to intelligently decide ADDS/PARTIAL_SUPERSEDE/FULL_SUPERSEDE/REDUNDANT
+
+
+
+async def reconcile_insights(
     user_id: str,
-    insight_type: str,  # COMPETENCY or MISCONCEPTION
-    content: str,
+    new_content: str,
+    insight_type: str,
     concept_ids: list[str],
+    source_type: str | None = None,
+    source_id: str | None = None,
     confidence: float = 1.0
 ) -> dict:
-    """Create a new insight AND automatically supersede contradicting insights.
+    """Use LLM to intelligently reconcile new insight with existing insights.
     
-    Supersede logic:
-    - If creating COMPETENCY → supersede existing MISCONCEPTIONs for same concepts
-    - If creating MISCONCEPTION → supersede existing COMPETENCYs for same concepts
+    OPTIMIZATION: Only calls LLM if there's an existing insight for the SAME source object.
+    If no existing insight for this source_id, directly creates without LLM reconciliation.
     
     Args:
         user_id: The user's ID
-        insight_type: Type of insight (COMPETENCY or MISCONCEPTION)
-        content: Description of the insight
-        concept_ids: List of concept IDs this insight is about
-        confidence: How certain the agent is about this insight (0.0-1.0)
+        new_content: The content of the new insight
+        insight_type: COMPETENCY or MISCONCEPTION
+        concept_ids: Concept IDs this insight is about
+        source_type: Optional source type (exercise, quiz, mcq, verification)
+        source_id: Optional specific ID of the source object
+        confidence: Confidence level of the insight
     
     Returns:
-        The created insight with its ID and count of superseded insights
+        Dict with action taken and resulting insight(s)
     """
-    # Determine which type to supersede
-    opposite_type = "MISCONCEPTION" if insight_type == "COMPETENCY" else "COMPETENCY"
+    from app.config import settings
+    from groq import AsyncGroq
+    import json
     
-    # First, find existing contradicting insights for the same concepts
-    find_query = """
-    MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(i:Insight {type: $opposite_type})-[:ABOUT]->(c:Concept)
-    WHERE c.id IN $concept_ids AND i.superseded_by IS NULL
-    RETURN i.id as id, i.content as content, collect(c.id) as concept_ids
-    """
+    # OPTIMIZATION: First check for existing insights on the SAME source object
+    # This is the primary criterion - only reconcile with same-object insights
+    existing_insights = []
     
-    contradicting = await neo4j_client.execute_read(
-        find_query,
-        user_id=user_id,
-        opposite_type=opposite_type,
-        concept_ids=concept_ids
-    )
+    if source_type and source_id:
+        # Check for insights from the exact same source object
+        existing_insights = await get_insights_by_source(user_id, source_type, source_id)
+        
+        if not existing_insights:
+            # No prior insight for this specific object - create directly, no LLM needed
+            print(f"[Insight] No existing insight for {source_type}:{source_id} - creating directly")
+            new_insight = await create_insight(
+                user_id=user_id,
+                insight_type=insight_type,
+                content=new_content,
+                concept_ids=concept_ids,
+                confidence=confidence,
+                source_type=source_type,
+                source_id=source_id
+            )
+            return {"action": "CREATE_NEW", "insight": new_insight}
+    else:
+        # No source_id provided - fall back to concept-level lookup
+        for concept_id in concept_ids:
+            insights = await get_insights_for_concept(user_id, concept_id)
+            for ins in insights:
+                if ins not in existing_insights:
+                    existing_insights.append(ins)
+        
+        # If no existing insights at all, create directly
+        if not existing_insights:
+            new_insight = await create_insight(
+                user_id=user_id,
+                insight_type=insight_type,
+                content=new_content,
+                concept_ids=concept_ids,
+                confidence=confidence,
+                source_type=source_type,
+                source_id=source_id
+            )
+            return {"action": "CREATE_NEW", "insight": new_insight}
     
-    # Create the new insight
+    # At this point, we have existing insights to reconcile against
+    print(f"[Insight] Found {len(existing_insights)} existing insights for {source_type or 'concept'}:{source_id or concept_ids[0]} - using LLM reconciliation")
+
+    
+    # Format existing insights for LLM
+    existing_formatted = "\n".join([
+        f"- [{i['type']}] (ID: {i['id']}): {i['content']}"
+        for i in existing_insights
+    ])
+    
+    # LLM determines the relationship
+    client = AsyncGroq(api_key=settings.groq_api_key)
+    
+    prompt = f"""You are analyzing student learning insights to determine how new information relates to existing knowledge.
+
+EXISTING INSIGHTS for this student on these concepts:
+{existing_formatted}
+
+NEW OBSERVATION:
+Type: {insight_type}
+Content: {new_content}
+
+Determine the relationship between the new observation and existing insights:
+
+1. **ADDS** - The new observation provides NEW information about a DIFFERENT aspect. Both insights should coexist.
+   Example: Existing says "understands static friction", new says "confused about rolling friction" → Both are valid, different topics.
+
+2. **PARTIAL_SUPERSEDE** - The new observation PARTIALLY contradicts or updates an existing insight. Merge them.
+   Example: Existing says "confused about all friction types", new says "now understands static but still confused about kinetic"
+   → Supersede old, create merged insight.
+
+3. **FULL_SUPERSEDE** - The new observation COMPLETELY contradicts an existing insight. Replace it.
+   Example: Existing says "confused about Newton's 3rd law", new says "correctly explained action-reaction pairs"
+   → Supersede old, create new.
+
+4. **REDUNDANT** - The new observation is already captured by an existing insight. Skip.
+   Example: Existing says "understands free body diagrams", new says "correctly drew force arrows" → Skip.
+
+Respond with ONLY valid JSON (no markdown):
+{{
+    "action": "ADDS" | "PARTIAL_SUPERSEDE" | "FULL_SUPERSEDE" | "REDUNDANT",
+    "affected_insight_ids": ["id1", "id2"],
+    "merged_content": "combined insight text if PARTIAL_SUPERSEDE, else null",
+    "reason": "brief explanation"
+}}"""
+
+    try:
+        response = await client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=500
+        )
+        
+        response_text = response.choices[0].message.content.strip()
+        # Clean up potential markdown code blocks
+        if response_text.startswith("```"):
+            response_text = response_text.split("```")[1]
+            if response_text.startswith("json"):
+                response_text = response_text[4:]
+        response_text = response_text.strip()
+        
+        decision = json.loads(response_text)
+        action = decision.get("action", "ADDS")
+        affected_ids = decision.get("affected_insight_ids", [])
+        merged_content = decision.get("merged_content")
+        reason = decision.get("reason", "")
+        
+        print(f"[Insight Reconcile] Action: {action}, Reason: {reason}")
+        
+        if action == "REDUNDANT":
+            return {"action": "REDUNDANT", "reason": reason, "insight": None}
+        
+        if action == "ADDS":
+            # Create new insight alongside existing
+            new_insight = await create_insight(
+                user_id=user_id,
+                insight_type=insight_type,
+                content=new_content,
+                concept_ids=concept_ids,
+                confidence=confidence,
+                source_type=source_type,
+                source_id=source_id
+            )
+            return {"action": "ADDS", "insight": new_insight}
+        
+        if action == "PARTIAL_SUPERSEDE":
+            # Create merged insight and supersede affected
+            final_content = merged_content if merged_content else new_content
+            new_insight = await create_insight(
+                user_id=user_id,
+                insight_type=insight_type,
+                content=final_content,
+                concept_ids=concept_ids,
+                confidence=confidence,
+                source_type=source_type,
+                source_id=source_id
+            )
+            
+            # Supersede affected insights
+            for old_id in affected_ids:
+                await supersede_insight(old_id, new_insight["id"])
+            
+            return {"action": "PARTIAL_SUPERSEDE", "insight": new_insight, "superseded": affected_ids}
+        
+        if action == "FULL_SUPERSEDE":
+            # Create new insight and supersede all affected
+            new_insight = await create_insight(
+                user_id=user_id,
+                insight_type=insight_type,
+                content=new_content,
+                concept_ids=concept_ids,
+                confidence=confidence,
+                source_type=source_type,
+                source_id=source_id
+            )
+            
+            for old_id in affected_ids:
+                await supersede_insight(old_id, new_insight["id"])
+            
+            return {"action": "FULL_SUPERSEDE", "insight": new_insight, "superseded": affected_ids}
+        
+    except Exception as e:
+        print(f"[Insight Reconcile] Error: {e}, falling back to simple creation")
+        # Fallback to simple creation on error
+        new_insight = await create_insight(
+            user_id=user_id,
+            insight_type=insight_type,
+            content=new_content,
+            concept_ids=concept_ids,
+            confidence=confidence,
+            source_type=source_type,
+            source_id=source_id
+        )
+        return {"action": "CREATE_NEW_FALLBACK", "insight": new_insight}
+    
+    # Default fallback
     new_insight = await create_insight(
         user_id=user_id,
         insight_type=insight_type,
-        content=content,
+        content=new_content,
         concept_ids=concept_ids,
-        confidence=confidence
+        confidence=confidence,
+        source_type=source_type,
+        source_id=source_id
     )
-    
-    new_insight_id = new_insight.get("id")
-    superseded_count = 0
-    
-    # Supersede all contradicting insights
-    if new_insight_id and contradicting:
-        for old in contradicting:
-            old_id = old.get("id")
-            if old_id:
-                success = await supersede_insight(old_id, new_insight_id)
-                if success:
-                    superseded_count += 1
-                    print(f"[Insight] Superseded {opposite_type}: {old.get('content', old_id)[:50]}...")
-    
-    new_insight["superseded_count"] = superseded_count
-    
-    if superseded_count > 0:
-        print(f"[Insight] Created {insight_type} and superseded {superseded_count} {opposite_type}(s)")
-    
-    return new_insight
+    return {"action": "CREATE_NEW", "insight": new_insight}
+
 
 
 async def get_prerequisite_insights(user_id: str, concept_id: str) -> list[dict]:
@@ -651,7 +901,8 @@ async def get_prerequisite_insights(user_id: str, concept_id: str) -> list[dict]
     prerequisite concepts, including:
     - Whether each prerequisite has been taught
     - Whether each prerequisite has been verified
-    - Any competency or misconception insights
+    - Any competency or misconception insights (including from subconcepts)
+    - Object-level insights (exercises, MCQs, quizzes)
     
     Args:
         user_id: The user's ID
@@ -673,15 +924,21 @@ async def get_prerequisite_insights(user_id: str, concept_id: str) -> list[dict]
     OPTIONAL MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(taught:Insight {type: "TAUGHT"})-[:ABOUT]->(prereq)
     WHERE taught.superseded_by IS NULL
     
-    // Get all active insights for this prerequisite
-    OPTIONAL MATCH (u)-[:HAS_INSIGHT]->(insight:Insight)-[:ABOUT]->(prereq)
-    WHERE insight.superseded_by IS NULL AND insight.id <> taught.id
+    // Get all active insights for this prerequisite AND its subconcepts
+    // Match concepts that are either the prereq itself or start with prereq.id + "."
+    OPTIONAL MATCH (u)-[:HAS_INSIGHT]->(insight:Insight)-[:ABOUT]->(related:Concept)
+    WHERE insight.superseded_by IS NULL 
+      AND (related.id = prereq.id OR related.id STARTS WITH prereq.id + ".")
+      AND (taught IS NULL OR insight.id <> taught.id)
     
     WITH prereq, taught, 
          collect(DISTINCT {
              type: insight.type, 
              content: insight.content,
-             confidence: insight.confidence
+             confidence: insight.confidence,
+             source_type: insight.source_type,
+             source_id: insight.source_id,
+             concept_id: related.id
          }) as insights
     
     RETURN prereq.id as id,

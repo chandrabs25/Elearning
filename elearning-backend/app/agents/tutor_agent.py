@@ -30,7 +30,7 @@ class TutorState(TypedDict):
     risk_concepts: list[str]           # Concept IDs where student has struggled before
     
     # Socratic flow state
-    mode: str  # "normal", "asking_prereq", "evaluating_answer", "explaining_connection", "off_topic", "waiting_to_resume", "awaiting_subsection_verification"
+    mode: str  # "normal", "asking_prereq", "evaluating_answer", "explaining_connection", "off_topic", "waiting_to_resume", "needs_prereq_check", "ready_to_continue"
     current_prereq_id: str | None  # The prerequisite we're currently testing
     current_prereq_title: str | None
     prereq_question: str | None   # The question we asked about the prerequisite
@@ -48,7 +48,7 @@ class TutorState(TypedDict):
     # Per-subsection verification
     pending_verification_concept: str | None  # Subsection ID awaiting verification
     pending_verification_title: str | None    # Title of subsection being verified
-    verification_question: str | None         # The question asked for verification
+    # Note: verification_question removed - verification is handled via separate API endpoints
 
 
 
@@ -357,7 +357,7 @@ Respond with ONLY one word: KNOWS_PREREQS, NEEDS_EXPLANATION, or OTHER."""
             state["mode"] = "normal"
 
     try:
-        # Use LLM to detect if student is confused or needs help
+        # Use LLM to classify message: on-topic, off-topic, or confused
         llm = ChatGroq(
             model="llama-3.3-70b-versatile",
             temperature=0.1,
@@ -365,35 +365,43 @@ Respond with ONLY one word: KNOWS_PREREQS, NEEDS_EXPLANATION, or OTHER."""
         )
         
         concept_title = state.get("current_concept_title", "the topic")
+        concept_content_preview = state.get("concept_content", "")[:500]
         
         prompt = f"""Analyze this student message in the context of learning about "{concept_title}":
 
 Student message: "{last_message}"
 
-Is the student expressing VALID CONFUSION about the content, or just asking an initial question?
+Current section content (summary): {concept_content_preview}
 
-Signs of valid confusion (NEEDS PREREQ HELP):
-- "I don't understand that explanation"
-- "But why is...?" (challenging the explanation)
-- "I'm lost", "This doesn't make sense"
-- "What do you mean by [previous concept]?"
+Classify the student's message:
+- ON_TOPIC: Asking about, or related to, the current topic "{concept_title}"
+- OFF_TOPIC: Asking about something completely unrelated to "{concept_title}" (e.g., different chapter, different physics topic, non-physics, or random tangent)
+- CONFUSED: Expressing confusion about an explanation already given (e.g., "I don't understand", "that doesn't make sense")
 
-Signs of NORMAL LEARNING (DO NOT TRIGGER PREREQ CHECK):
-- "Can you explain {concept_title}?" (Initial request)
-- "What is gravity?"
-- "Teach me about this."
-- "Give me an example."
+Examples:
+- "What is escape velocity?" when learning about Gravitational Force → OFF_TOPIC (different section)
+- "Why does mass affect gravitational force?" when learning about Gravitational Force → ON_TOPIC
+- "I don't understand what you just said" → CONFUSED
+- "Can you explain this more?" → ON_TOPIC
+- "What's the weather like?" → OFF_TOPIC
 
-Respond with ONLY one word:
-- CONFUSED: if they are struggling with an explanation you already gave.
-- CLEAR: for initial questions, requests for explanation, or simple facts."""
+Respond with ONLY one word: ON_TOPIC, OFF_TOPIC, or CONFUSED."""
 
         response = await llm.ainvoke([HumanMessage(content=prompt)])
-        needs_help = "CONFUSED" in response.content.upper()
-        print(f"[Socratic] Confusion detection (LLM): {needs_help} for '{last_message[:50]}...'")
+        classification = response.content.strip().upper()
+        print(f"[Socratic] Message classification: {classification} for '{last_message[:50]}...'")
+        
+        # Handle off-topic detection
+        if "OFF_TOPIC" in classification:
+            state["mode"] = "off_topic"
+            state["off_topic_question"] = last_message
+            print(f"[Socratic] Off-topic detected during normal flow, routing to answer_off_topic")
+            return state
+        
+        needs_help = "CONFUSED" in classification
             
     except Exception as e:
-        print(f"[Socratic] Confusion detection error: {e}, falling back to keyword match")
+        print(f"[Socratic] Classification error: {e}, falling back to keyword match")
         # Fallback to keyword detection - be more conservative
         confusion_keywords = ["don't understand", "im lost", "i'm lost", "confusing", "doesn't make sense"]
         needs_help = any(kw in last_message.lower() for kw in confusion_keywords)
@@ -514,7 +522,7 @@ Be friendly and encouraging."""
 async def evaluate_prereq_answer(state: TutorState) -> TutorState:
     """Evaluate if the student's answer to the prerequisite question is correct."""
     from app.config import settings
-    from app.graph.user_state import create_insight
+    from app.graph.user_state import reconcile_insights
     
     llm = ChatGroq(
         model="llama-3.3-70b-versatile", 
@@ -564,7 +572,7 @@ Respond with ONLY one word:
     is_correct = "CORRECT" in response.content.upper()
     state["prereq_answer_correct"] = is_correct
     
-    # Generate insight based on the evaluation
+    # Generate insight based on the evaluation using reconcile_insights
     if user_id and prereq_id:
         try:
             concept_ids = [prereq_id]
@@ -572,12 +580,14 @@ Respond with ONLY one word:
                 concept_ids.append(main_concept_id)
             
             if not is_correct:
-                # Create MISCONCEPTION insight
-                await create_insight(
+                # Create MISCONCEPTION insight using reconcile
+                await reconcile_insights(
                     user_id=user_id,
+                    new_content=f"Struggled with '{prereq_title}' when learning '{main_concept_title}'",
                     insight_type="MISCONCEPTION",
-                    content=f"Struggled with '{prereq_title}' when learning '{main_concept_title}'",
                     concept_ids=concept_ids,
+                    source_type="prerequisite",
+                    source_id=prereq_id,
                     confidence=0.8
                 )
                 print(f"[Insight] Created MISCONCEPTION for {prereq_title}")
@@ -594,7 +604,7 @@ Respond with ONLY one word:
 async def explain_connection(state: TutorState) -> TutorState:
     """Student answered correctly - explain how prerequisite connects to current topic."""
     from app.config import settings
-    from app.graph.user_state import create_insight, supersede_insight
+    from app.graph.user_state import reconcile_insights
     
     llm = ChatGroq(
         model="llama-3.3-70b-versatile", 
@@ -608,39 +618,28 @@ async def explain_connection(state: TutorState) -> TutorState:
     main_concept_title = state.get("current_concept_title", "the topic")
     user_id = state.get("user_id")
     
-    # Create COMPETENCY insight for understanding the link
-    new_insight_id = None
+    # Create COMPETENCY insight using reconcile_insights
+    # This automatically handles superseding any conflicting MISCONCEPTION insights
     if user_id and prereq_id:
         try:
             concept_ids = [prereq_id]
             if main_concept_id and main_concept_id != prereq_id:
                 concept_ids.append(main_concept_id)
             
-            new_insight = await create_insight(
+            result = await reconcile_insights(
                 user_id=user_id,
+                new_content=f"Understood link between '{prereq_title}' and '{main_concept_title}'",
                 insight_type="COMPETENCY",
-                content=f"Understood link between '{prereq_title}' and '{main_concept_title}'",
                 concept_ids=concept_ids,
+                source_type="prerequisite",
+                source_id=prereq_id,
                 confidence=0.9
             )
-            new_insight_id = new_insight.get("id")
-            print(f"[Insight] Created COMPETENCY for {prereq_title} -> {main_concept_title}")
-            
-            # Supersede any existing MISCONCEPTION insights for this prereq
-            # This marks the student's progress from "struggling" to "understanding"
-            existing_misconceptions = [
-                i for i in state.get("active_misconceptions", [])
-                if prereq_id in i.get("concept_ids", [])
-            ]
-            
-            for old_insight in existing_misconceptions:
-                old_id = old_insight.get("id")
-                if old_id and new_insight_id:
-                    await supersede_insight(old_id, new_insight_id)
-                    print(f"[Insight] Superseded misconception: {old_insight.get('content', old_id)}")
+            action = result.get("action", "CREATE_NEW")
+            print(f"[Insight] Created COMPETENCY for {prereq_title} -> {main_concept_title} (action: {action})")
                     
         except Exception as e:
-            print(f"[Insight] Error creating/superseding insight: {e}")
+            print(f"[Insight] Error creating insight: {e}")
     
     prompt = f"""You are a physics tutor. The student just correctly explained their understanding of "{prereq_title}".
 
@@ -829,7 +828,7 @@ Guidelines:
             current_idx = next((i for i, sc in enumerate(all_subconcepts) if sc["id"] == current_subconcept_id), 0)
             progress_info = f"\n\n📍 **Currently Teaching:** {subconcept_title} ({current_idx + 1}/{len(all_subconcepts)})"
         
-        # Build insight context for current concept
+        # Build insight context for current concept (now includes subconcepts and object-level insights)
         insights = state.get("insights", [])
         insight_context = ""
         if insights:
@@ -837,16 +836,27 @@ Guidelines:
             for i in insights:
                 insight_type = i.get("type", "")
                 content = i.get("content", "")
+                source_type = i.get("source_type")
+                source_id = i.get("source_id")
+                concept_id = i.get("concept_id", "")
+                
+                # Build source suffix if available
+                source_suffix = ""
+                if source_type and source_id:
+                    source_suffix = f" (from {source_type} {source_id})"
+                elif concept_id and concept_id != section_id:
+                    source_suffix = f" (from subconcept {concept_id})"
+                
                 if insight_type == "MISCONCEPTION":
-                    insight_lines.append(f"- ⚠️ Previous struggle: {content}")
+                    insight_lines.append(f"- ⚠️ Previous struggle{source_suffix}: {content}")
                 elif insight_type == "COMPETENCY":
-                    insight_lines.append(f"- ✅ Demonstrated understanding: {content}")
+                    insight_lines.append(f"- ✅ Demonstrated understanding{source_suffix}: {content}")
                 elif insight_type == "PREFERENCE":
                     insight_lines.append(f"- 💡 Preference: {content}")
             if insight_lines:
                 insight_context = "\n\n**Student History (use this to personalize your response):**\n" + "\n".join(insight_lines)
         
-        # NEW: Build prerequisite context
+        # Build prerequisite context (now includes subconcepts and object-level insights)
         prereq_insights = state.get("prerequisite_insights", [])
         prereq_context = ""
         if prereq_insights:
@@ -855,10 +865,19 @@ Guidelines:
                 status = "✅ Taught & Verified" if p["is_verified"] else ("📚 Taught" if p["is_taught"] else "❌ Not yet covered")
                 prereq_lines.append(f"- {p['title']}: {status}")
                 for insight in p.get("insights", []):
-                    if insight.get("type") == "MISCONCEPTION":
-                        prereq_lines.append(f"    ⚠️ Struggled: {insight['content']}")
-                    elif insight.get("type") == "COMPETENCY":
-                        prereq_lines.append(f"    ✅ Strong: {insight['content']}")
+                    insight_type = insight.get("type")
+                    content = insight.get("content", "")
+                    source_type = insight.get("source_type")
+                    source_id = insight.get("source_id")
+                    
+                    source_suffix = ""
+                    if source_type and source_id:
+                        source_suffix = f" (from {source_type} {source_id})"
+                    
+                    if insight_type == "MISCONCEPTION":
+                        prereq_lines.append(f"    ⚠️ Struggled{source_suffix}: {content}")
+                    elif insight_type == "COMPETENCY":
+                        prereq_lines.append(f"    ✅ Strong{source_suffix}: {content}")
             if prereq_lines:
                 prereq_context = "\n\n**Prerequisite Knowledge Status (use this to adjust your teaching):**\n" + "\n".join(prereq_lines)
         
@@ -1157,7 +1176,11 @@ Prerequisites to explain: {prereq_titles}
 
 
 async def answer_off_topic(state: TutorState) -> TutorState:
-    """Answer an off-topic question and redirect back to the current topic."""
+    """Answer an off-topic question and redirect back to the current topic.
+    
+    Current behavior: Answer briefly, then redirect to current section.
+    Future: Will support switching to different sections/chapters.
+    """
     from app.config import settings
     
     llm = ChatGroq(
@@ -1169,23 +1192,22 @@ async def answer_off_topic(state: TutorState) -> TutorState:
     off_topic_question = state.get("off_topic_question", "")
     current_topic = state.get("current_concept_title", "the topic we were discussing")
     
-    prompt = f"""You are a friendly AI physics tutor. The student has asked an off-topic question while you were teaching about "{current_topic}".
+    prompt = f"""You are a friendly AI physics tutor. The student has asked a question about a different topic while you were teaching about "{current_topic}".
 
-Off-topic question: "{off_topic_question}"
+Student's question: "{off_topic_question}"
 
 Your response should:
-1. Briefly and helpfully answer their question (keep it concise - just 1-2 sentences)
-2. Then naturally transition back to the learning topic
-3. End by asking if they'd like to continue learning about "{current_topic}"
+1. Briefly and helpfully answer their question (keep it concise - 2-3 sentences max)
+2. Mention that in a future version, you'll be able to switch topics seamlessly, but for now let's stay focused
+3. Naturally transition back and ask if they're ready to continue with "{current_topic}"
 
-Be warm and don't make the student feel bad for asking. Something like:
-"[Brief answer]. By the way, we were learning about {current_topic}. Would you like to continue where we left off?"
+Example tone:
+"[Brief answer to their question]. That's a great topic! In future versions, I'll be able to switch sections for you, but for now let's stay focused on {current_topic} so we can master it together. Ready to continue?"
 
 Keep your total response under 100 words."""
 
     response = await llm.ainvoke([HumanMessage(content=prompt)])
     
-    # Set mode to waiting for resume confirmation
     state["mode"] = "waiting_to_resume"
     state["off_topic_question"] = None  # Clear the question
     state["messages"] = state.get("messages", []) + [AIMessage(content=response.content)]
