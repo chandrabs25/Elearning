@@ -81,6 +81,8 @@ Because the **Insight Engine** is separate from the content, it can travel with 
 
 This isn’t just about passing a test. It’s about building a digital extension of your own brain, one that organizes the world’s knowledge into a structure you can actually learn, and remembers your journey so you never have to start from scratch again.
 
+## Graphs for the student insights storage flow and tutor agent flow
+
 every user will have a node insights, which will record the insights for every section of the chapter and every subsection and every exercise. these insights will be superseded by the new insights, whenever they change. The old insights are deleted, they can be used for tracking the progression.
 <img width="3636" height="2435" alt="Kepler&#39;s Laws Insight Flow-2026-02-05-130312" src="https://github.com/user-attachments/assets/6cea2cbf-4534-4d9d-abd0-5b44c8b49eb9" />
 
