@@ -31,6 +31,7 @@ from app.graph.chat_history import (
 from app.chains.extractors import extract_topic_from_add_request, extract_component_to_remove, is_open_book_request, extract_highlight_terms
 from app.chains.content import (
     get_section_by_id,
+    extract_section_text,
     get_related_sections,
     format_content_for_ui,
     search_sections_by_topic,
@@ -3164,6 +3165,12 @@ async def start_understanding_check(request: CheckUnderstandingRequest) -> Check
     
     # Generate question for first unverified concept
     first_concept = to_verify[0]
+    sibling_titles = [
+        c.get("title", "")
+        for c in status.get("concepts", [])
+        if c.get("id") != first_concept.get("id") and c.get("title")
+    ]
+    forbidden_topics = ", ".join(sibling_titles[:6]) if sibling_titles else "other subconcepts in this section"
     
     # Fetch section content to provide context for question generation
     from app.chains.content import get_section_by_id, extract_section_text
@@ -3194,7 +3201,9 @@ async def start_understanding_check(request: CheckUnderstandingRequest) -> Check
 - "Compare/contrast..." (relationship understanding)
 
 **STRICT REQUIREMENTS:**
-- Topic must be strictly about "{first_concept['title']}" - NOT about {', '.join([c['title'] for c in to_verify[1:3]]) if len(to_verify) > 1 else 'other topics'}
+- Topic must be strictly about "{first_concept['title']}".
+- Do NOT use ideas, formulas, or examples from these other subconcepts: {forbidden_topics}
+- If the target is one law/principle, do NOT ask about a different law/principle.
 - Test understanding, NOT memorization of facts from the text
 - Include specific assumptions to make the answer unambiguous
 - Answerable in 2-3 sentences
@@ -3354,6 +3363,12 @@ Respond with ONLY the summary sentence."""
     
     if to_verify:
         next_concept = to_verify[0]
+        sibling_titles = [
+            c.get("title", "")
+            for c in status.get("concepts", [])
+            if c.get("id") != next_concept.get("id") and c.get("title")
+        ]
+        forbidden_topics = ", ".join(sibling_titles[:6]) if sibling_titles else "other subconcepts in this section"
         
         # Fetch insights for this concept to personalize the question
         from app.graph.user_state import get_insights_for_concept
@@ -3394,6 +3409,8 @@ Address these gaps in your question.
 
 **STRICT REQUIREMENTS:**
 - Topic must be strictly about "{next_concept['title']}"
+- Do NOT use ideas, formulas, or examples from these other subconcepts: {forbidden_topics}
+- If the target is one law/principle, do NOT ask about a different law/principle.
 - Test understanding, NOT memorization
 - Include specific assumptions for clarity
 - Be friendly and encouraging

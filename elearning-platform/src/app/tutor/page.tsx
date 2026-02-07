@@ -9,7 +9,7 @@ import ProgressBar from "@/components/ProgressBar";
 import { ChatMessage } from "@/components/cards/ChatPanel";
 import {
     saveMessages,
-    loadMessages,
+    clearMessages,
     addPendingOperation,
     processRetryQueue,
     saveProgress,
@@ -347,11 +347,8 @@ export default function TutorV2Page() {
 
     // Fetch chat history for a section (with localStorage cache)
     const fetchChatHistory = async (sectionId: string) => {
-        // Load from cache immediately for instant UI
-        const cachedMessages = loadMessages<ChatMessage>(USER_ID, sectionId);
-        if (cachedMessages.length > 0) {
-            setChatMessages(cachedMessages);
-        }
+        // Backend is source of truth; avoid showing stale cached history.
+        setChatMessages([]);
 
         // Then fetch from backend to sync
         try {
@@ -368,10 +365,16 @@ export default function TutorV2Page() {
                 setChatMessages(messages);
                 // Save to cache for offline access
                 saveMessages(USER_ID, sectionId, messages);
+            } else {
+                // Clear any stale cache if backend couldn't provide history.
+                clearMessages(USER_ID, sectionId);
+                setChatMessages([]);
             }
         } catch (err) {
             console.error("Failed to fetch chat history:", err);
-            // Cache already loaded above, so UI still works
+            // Avoid stale history UI when backend is unavailable.
+            clearMessages(USER_ID, sectionId);
+            setChatMessages([]);
         }
     };
 
@@ -895,7 +898,7 @@ export default function TutorV2Page() {
                                         index={index}
                                         totalPanels={ui.panels.length}
                                         layout={ui.layout}
-                                        onAction={(action) => sendTutorMessage(action, true)}
+                                        onAction={(action) => sendTutorMessage(action, panel.type === "MCQCard" ? false : true)}
                                         calculatedWidth={ui.layout === "dynamic" ? calculatePanelWidth(panel, ui.panels) : undefined}
                                         isFocused={focusedPanelIndex === index}
                                         onFocus={() => setFocusedPanelIndex(index)}
@@ -1105,4 +1108,3 @@ function calculatePanelWidth(panel: Panel, allPanels: Panel[]): string {
 }
 
 export { calculatePanelWidth, calculateGridColumns };
-
