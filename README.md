@@ -1,5 +1,9 @@
 # The Living Textbook: An AI Tutor That Learns About You Like a Teacher and Behaves Like a Book
 
+
+https://github.com/user-attachments/assets/b08e114e-e69f-4539-8402-3a39c5503d1b
+
+
 _Srichandra_  
 _Feb 05, 2026_
 
