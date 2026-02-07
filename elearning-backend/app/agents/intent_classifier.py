@@ -81,7 +81,7 @@ async def classify_intent_with_section(message: str, context: dict = None) -> di
     section_list = "\n".join([f"  - {s['id']}: {s['title']}" for s in toc[:15]])  # Limit to 15
     
     llm = ChatGroq(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         temperature=0.1,
         api_key=settings.groq_api_key
     )

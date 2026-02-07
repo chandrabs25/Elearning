@@ -50,36 +50,66 @@ async def get_user_state(user_id: str) -> dict:
 
 
 async def save_tutor_state(user_id: str, tutor_state: dict) -> None:
-    """Persist tutor session state (mode, prereq info) to Neo4j User node."""
+    """Persist tutor session state (mode, prereq info) to Neo4j User node.
+    
+    State is stored per-section to prevent bleed across different topics.
+    """
     import json
+    
+    section_id = tutor_state.get("current_concept_id")
+    if not section_id:
+        return  # Cannot save without section context
+    
+    # Store state in a JSON map keyed by section_id
+    state_data = {
+        "mode": tutor_state.get("mode", "normal"),
+        "section_id": section_id,
+        "prereq_id": tutor_state.get("current_prereq_id"),
+        "prereq_title": tutor_state.get("current_prereq_title"),
+        "prereq_question": tutor_state.get("prereq_question"),
+        "prereq_chain": tutor_state.get("prerequisite_chain", []),
+        "pending_verification": tutor_state.get("pending_verification_concept")
+    }
+    
     query = """
     MATCH (u:User {id: $user_id})
-    SET u.tutor_mode = $mode,
-        u.tutor_prereq_id = $prereq_id,
-        u.tutor_prereq_title = $prereq_title,
-        u.tutor_prereq_question = $prereq_question,
-        u.tutor_prereq_chain = $prereq_chain,
-        u.tutor_pending_verification = $pending_verification
+    // Get existing tutor_states map or create empty one
+    WITH u, COALESCE(u.tutor_states, "{}") as states_json
+    // Parse JSON, update for this section using apoc.map.setKey, serialize back
+    WITH u, apoc.convert.fromJsonMap(states_json) as states_map
+    SET u.tutor_states = apoc.convert.toJson(
+        apoc.map.setKey(states_map, $section_id, $state_data)
+    )
     """
+    
     await neo4j_client.execute_write(
         query,
         user_id=user_id,
-        mode=tutor_state.get("mode", "normal"),
-        prereq_id=tutor_state.get("current_prereq_id"),
-        prereq_title=tutor_state.get("current_prereq_title"),
-        prereq_question=tutor_state.get("prereq_question"),
-        prereq_chain=json.dumps(tutor_state.get("prerequisite_chain", [])),
-        pending_verification=tutor_state.get("pending_verification_concept")
+        section_id=section_id,
+        state_data=state_data
     )
     
-    # Invalidate cache
-    await cache_delete(f"tutor_state:{user_id}")
+    # Invalidate cache for this section
+    await cache_delete(f"tutor_state:{user_id}:{section_id}")
 
 
-async def get_tutor_state(user_id: str) -> dict:
-    """Retrieve persisted tutor session state from Neo4j User node."""
+async def get_tutor_state(user_id: str, section_id: str = None) -> dict:
+    """Retrieve persisted tutor session state from Neo4j User node.
+    
+    Args:
+        user_id: The user ID
+        section_id: The section ID to get state for. If None, returns empty/default state.
+    
+    Returns:
+        Dictionary with mode, prereq info, etc. for this specific section.
+    """
     import json
-    cache_key = f"tutor_state:{user_id}"
+    
+    if not section_id:
+        # Without section context, return empty state
+        return {"mode": "normal", "prerequisite_chain": []}
+    
+    cache_key = f"tutor_state:{user_id}:{section_id}"
     
     cached = await cache_get(cache_key)
     if cached:
@@ -87,25 +117,26 @@ async def get_tutor_state(user_id: str) -> dict:
     
     query = """
     MATCH (u:User {id: $user_id})
-    RETURN u.tutor_mode as mode,
-           u.tutor_prereq_id as prereq_id,
-           u.tutor_prereq_title as prereq_title,
-           u.tutor_prereq_question as prereq_question,
-           u.tutor_prereq_chain as prereq_chain,
-           u.tutor_pending_verification as pending_verification
+    WITH u, COALESCE(u.tutor_states, "{}") as states_json
+    WITH apoc.convert.fromJsonMap(states_json) as states_map
+    RETURN states_map[$section_id] as state_data
     """
-    results = await neo4j_client.execute_read(query, user_id=user_id)
+    results = await neo4j_client.execute_read(query, user_id=user_id, section_id=section_id)
     if not results or not results[0]:
-        return {}
+        return {"mode": "normal", "prerequisite_chain": []}
     
-    row = results[0]
+    state_data = results[0].get("state_data")
+    if not state_data:
+        return {"mode": "normal", "prerequisite_chain": []}
+    # state_data is already a dict from the JSON map
     state = {
-        "mode": row.get("mode") or "normal",
-        "current_prereq_id": row.get("prereq_id"),
-        "current_prereq_title": row.get("prereq_title"),
-        "prereq_question": row.get("prereq_question"),
-        "prerequisite_chain": json.loads(row.get("prereq_chain") or "[]"),
-        "pending_verification_concept": row.get("pending_verification")
+        "mode": state_data.get("mode", "normal"),
+        "current_section_id": state_data.get("section_id"),
+        "current_prereq_id": state_data.get("prereq_id"),
+        "current_prereq_title": state_data.get("prereq_title"),
+        "prereq_question": state_data.get("prereq_question"),
+        "prerequisite_chain": state_data.get("prereq_chain", []),
+        "pending_verification_concept": state_data.get("pending_verification")
     }
     
     await cache_set(cache_key, state)
@@ -504,17 +535,20 @@ async def get_insights_for_concept(user_id: str, concept_id: str, include_subcon
     section_prefix = concept_id + "."
     
     query = """
-    // Get insights directly about this concept or its subconcepts
+    // Get insights directly about this concept or its subconcepts.
+    // Aggregate concept IDs per insight so callers can use concept_ids reliably.
     MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(i:Insight)-[:ABOUT]->(c:Concept)
     WHERE i.superseded_by IS NULL
       AND (c.id = $concept_id OR ($include_sub AND c.id STARTS WITH $section_prefix))
-    RETURN i.id as id, 
-           i.type as type, 
-           i.content as content, 
+    WITH i, collect(DISTINCT c.id) as concept_ids
+    RETURN i.id as id,
+           i.type as type,
+           i.content as content,
            i.confidence as confidence,
            i.source_type as source_type,
            i.source_id as source_id,
-           c.id as concept_id,
+           concept_ids,
+           concept_ids[0] as concept_id,
            i.created_at as created_at
     ORDER BY i.created_at DESC
     """
@@ -535,6 +569,7 @@ async def get_insights_for_concept(user_id: str, concept_id: str, include_subcon
             "confidence": r["confidence"],
             "source_type": r["source_type"],
             "source_id": r["source_id"],
+            "concept_ids": r["concept_ids"] or [],
             "concept_id": r["concept_id"],
             "created_at": str(r["created_at"]) if r["created_at"] else None
         }
@@ -792,7 +827,7 @@ Respond with ONLY valid JSON (no markdown):
 
     try:
         response = await client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
             max_tokens=500
@@ -917,35 +952,35 @@ async def get_prerequisite_insights(user_id: str, concept_id: str) -> list[dict]
         section_id = '.'.join(concept_id.split('.')[:2])
     
     query = """
-    // Get prerequisites for the concept (or its parent section)
+    // Bind user once so prerequisite-insight fetch does not depend on TAUGHT existing.
+    MATCH (u:User {id: $user_id})
     MATCH (c:Concept {id: $section_id})-[:REQUIRES]->(prereq:Concept)
-    
-    // Check if this prerequisite has a TAUGHT insight for this user
-    OPTIONAL MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(taught:Insight {type: "TAUGHT"})-[:ABOUT]->(prereq)
+
+    // TAUGHT status for prerequisite section node
+    OPTIONAL MATCH (u)-[:HAS_INSIGHT]->(taught:Insight {type: "TAUGHT"})-[:ABOUT]->(prereq)
     WHERE taught.superseded_by IS NULL
-    
-    // Get all active insights for this prerequisite AND its subconcepts
-    // Match concepts that are either the prereq itself or start with prereq.id + "."
+    WITH u, prereq, collect(DISTINCT taught) as taught_insights
+
+    // All active insights for prerequisite and its subsections (object-level included)
     OPTIONAL MATCH (u)-[:HAS_INSIGHT]->(insight:Insight)-[:ABOUT]->(related:Concept)
-    WHERE insight.superseded_by IS NULL 
+    WHERE insight.superseded_by IS NULL
       AND (related.id = prereq.id OR related.id STARTS WITH prereq.id + ".")
-      AND (taught IS NULL OR insight.id <> taught.id)
-    
-    WITH prereq, taught, 
+      AND NONE(t IN taught_insights WHERE t IS NOT NULL AND insight.id = t.id)
+    WITH prereq, taught_insights,
          collect(DISTINCT {
-             type: insight.type, 
+             type: insight.type,
              content: insight.content,
              confidence: insight.confidence,
              source_type: insight.source_type,
              source_id: insight.source_id,
              concept_id: related.id
          }) as insights
-    
+
     RETURN prereq.id as id,
            prereq.title as title,
            prereq.description as description,
-           CASE WHEN taught IS NOT NULL THEN true ELSE false END as is_taught,
-           COALESCE(taught.verified, false) as is_verified,
+           size(taught_insights) > 0 as is_taught,
+           any(t IN taught_insights WHERE COALESCE(t.verified, false)) as is_verified,
            insights
     ORDER BY prereq.id
     """
@@ -1083,12 +1118,15 @@ async def get_section_learning_status(user_id: str, section_id: str) -> dict:
     WHERE c.id STARTS WITH $section_prefix
     OPTIONAL MATCH (u:User {id: $user_id})-[:HAS_INSIGHT]->(i:Insight {type: "TAUGHT"})-[:ABOUT]->(c)
     WHERE i.superseded_by IS NULL
-    RETURN c.id as id, 
+    WITH c, collect(DISTINCT i) as taught_insights
+    RETURN c.id as id,
            c.title as title,
-           CASE WHEN i IS NOT NULL THEN true ELSE false END as explained,
-           COALESCE(i.verified, false) as verified,
-           COALESCE(i.needs_retry, false) as needs_retry,
-           COALESCE(i.retry_count, 0) as retry_count
+           size(taught_insights) > 0 as explained,
+           any(t in taught_insights WHERE COALESCE(t.verified, false)) as verified,
+           any(t in taught_insights WHERE COALESCE(t.needs_retry, false)) as needs_retry,
+           reduce(mx = 0, t in taught_insights |
+               CASE WHEN COALESCE(t.retry_count, 0) > mx THEN COALESCE(t.retry_count, 0) ELSE mx END
+           ) as retry_count
     ORDER BY c.id
     """
     
@@ -1349,4 +1387,3 @@ async def get_next_subconcept(user_id: str, section_id: str, current_subconcept_
         return all_subconcepts[current_index + 1]
     
     return None
-

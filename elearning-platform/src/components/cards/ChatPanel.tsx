@@ -300,7 +300,8 @@ export default function ChatPanel({
                 body: JSON.stringify({
                     user_id: context.user_id,
                     concept_id: currentVerifyConceptId,
-                    answer: verificationAnswer
+                    answer: verificationAnswer,
+                    question: verificationQuestion  // Pass question for context-aware evaluation
                 })
             });
 
@@ -333,8 +334,9 @@ export default function ChatPanel({
                         setVerificationQuestion(null);
                         setVerificationFeedback(null);
                     }, 2000);
-                } else if (data.next_question) {
-                    // Move to next verification question after showing feedback
+                } else if (data.next_question && data.is_correct) {
+                    // Only auto-transition to next question if answer was correct
+                    // For wrong answers, user must click "Try Again" button
                     setPendingNextSubconcept(null);
                     setTimeout(() => {
                         setVerificationQuestion(data.next_question);
@@ -342,6 +344,7 @@ export default function ChatPanel({
                         setVerificationFeedback(null);
                     }, 2000);
                 }
+                // For wrong answers: feedback stays visible until user clicks "Try Again"
             }
 
         } catch (err) {

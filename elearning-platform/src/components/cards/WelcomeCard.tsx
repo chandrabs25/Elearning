@@ -1,7 +1,8 @@
 "use client";
 
-import { motion } from "framer-motion";
-import { ArrowRight, BookOpen, PlayCircle, MessageCircle, FileQuestion } from "lucide-react";
+import { useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { ArrowRight, BookOpen, PlayCircle, ChevronDown, Terminal } from "lucide-react";
 
 interface WelcomeCardProps {
     title: string;
@@ -13,6 +14,37 @@ interface WelcomeCardProps {
     onAction?: (action: string) => void;
 }
 
+const ALL_COMMANDS = [
+    {
+        category: "Navigation", commands: [
+            { cmd: "open 7.2", use: "Go to a specific section" },
+            { cmd: "next", use: "Go to next section" },
+            { cmd: "previous", use: "Go to previous section" },
+            { cmd: "resume", use: "Continue where you left off" },
+        ]
+    },
+    {
+        category: "Learning", commands: [
+            { cmd: "open chat", use: "Open tutor chat panel" },
+            { cmd: "teach me", use: "Start teaching current section" },
+            { cmd: "explain this", use: "Get detailed explanation" },
+        ]
+    },
+    {
+        category: "Practice", commands: [
+            { cmd: "quiz", use: "In-chapter example problems" },
+            { cmd: "mcqs", use: "AI-generated MCQs" },
+            { cmd: "exercise", use: "End-of-chapter problems" },
+        ]
+    },
+    {
+        category: "Layout", commands: [
+            { cmd: "focus", use: "Single panel view" },
+            { cmd: "show chapters", use: "Show navigation panel" },
+        ]
+    },
+];
+
 export default function WelcomeCard({
     title,
     subtitle,
@@ -20,6 +52,8 @@ export default function WelcomeCard({
     lastSection,
     onAction,
 }: WelcomeCardProps) {
+    const [commandsExpanded, setCommandsExpanded] = useState(false);
+
     return (
         <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -106,6 +140,47 @@ export default function WelcomeCard({
                     </p>
                 </div>
 
+                {/* All Commands Dropdown */}
+                <div className="mb-6">
+                    <button
+                        onClick={() => setCommandsExpanded(!commandsExpanded)}
+                        className="w-full flex items-center justify-between p-4 bg-black/20 hover:bg-black/30 rounded-xl border border-white/5 transition-all"
+                    >
+                        <div className="flex items-center gap-2">
+                            <Terminal className="w-4 h-4 text-white/40" />
+                            <span className="text-sm text-white/60">All Commands</span>
+                        </div>
+                        <ChevronDown className={`w-4 h-4 text-white/40 transition-transform ${commandsExpanded ? "rotate-180" : ""}`} />
+                    </button>
+
+                    <AnimatePresence>
+                        {commandsExpanded && (
+                            <motion.div
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: "auto" }}
+                                exit={{ opacity: 0, height: 0 }}
+                                className="overflow-hidden"
+                            >
+                                <div className="p-4 bg-black/20 rounded-b-xl border border-t-0 border-white/5 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    {ALL_COMMANDS.map((cat) => (
+                                        <div key={cat.category}>
+                                            <h4 className="text-[10px] uppercase tracking-wider text-white/30 mb-2">{cat.category}</h4>
+                                            <div className="space-y-1">
+                                                {cat.commands.map((item) => (
+                                                    <div key={item.cmd} className="flex items-center gap-2 text-xs">
+                                                        <code className="text-white/60 font-mono bg-white/5 px-1.5 py-0.5 rounded">{item.cmd}</code>
+                                                        <span className="text-white/30">— {item.use}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+                </div>
+
                 {/* Topics */}
                 {topics && topics.length > 0 && (
                     <div>
@@ -138,4 +213,3 @@ export default function WelcomeCard({
         </motion.div>
     );
 }
-

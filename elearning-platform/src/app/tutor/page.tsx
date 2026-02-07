@@ -1011,7 +1011,6 @@ export default function TutorV2Page() {
                         placeholder={getInputPlaceholder()}
                         onSend={handleSendMessage}
                         isProcessing={isProcessing || isChatTyping}
-                        hint={ui?.next_prompt}
                         focusTarget={isChatFocused ? "chat" : "tutor"}
                         focusLabel={getFocusLabel()}
                         talkingTo={getTalkingTo()}

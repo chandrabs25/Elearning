@@ -109,6 +109,20 @@ async def reset_progress_endpoint(req: ClearHistoryRequest):
     
     # Invalidate cache
     await cache_delete(f"user_state:{req.user_id}")
+    await cache_delete(f"tutor_state:{req.user_id}")
+
+    # Also clear persisted tutor flow state so next chat starts fresh.
+    clear_tutor_state_query = """
+    MATCH (u:User {id: $user_id})
+    SET u.tutor_mode = "normal",
+        u.tutor_section_id = null,
+        u.tutor_prereq_id = null,
+        u.tutor_prereq_title = null,
+        u.tutor_prereq_question = null,
+        u.tutor_prereq_chain = "[]",
+        u.tutor_pending_verification = null
+    """
+    await neo4j_client.execute_write(clear_tutor_state_query, user_id=req.user_id)
     
     return {"success": True, "message": f"Reset progress for section {req.section_id}", "deleted_insights": deleted_count}
 
@@ -201,7 +215,7 @@ Return ONLY the JSON, no markdown."""
         client = AsyncGroq(api_key=settings.groq_api_key)
         response = await client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             temperature=0.1
         )
         content = response.choices[0].message.content.strip()
@@ -821,10 +835,16 @@ async def chat_panel_message(req: ChatPanelRequest):
 
     
     # Load persisted tutor state (mode, prereq info) from previous request
-    persisted_tutor_state = await get_tutor_state(req.user_id)
+    # NOW SECTION-SCOPED to prevent state bleed across sections
+    persisted_tutor_state = await get_tutor_state(req.user_id, section_id)
     persisted_mode = persisted_tutor_state.get("mode", "normal")
     persisted_prereq_chain = persisted_tutor_state.get("prerequisite_chain", [])
-    print(f"[Tutor State] Loaded: mode={persisted_mode}, prereq_chain={persisted_prereq_chain}")
+    persisted_prereq_id = persisted_tutor_state.get("current_prereq_id")
+    persisted_prereq_title = persisted_tutor_state.get("current_prereq_title")
+    persisted_prereq_question = persisted_tutor_state.get("prereq_question")
+    persisted_pending_verification = persisted_tutor_state.get("pending_verification_concept")
+
+    print(f"[Tutor State] Loaded for section {section_id}: mode={persisted_mode}, prereq_chain={persisted_prereq_chain}")
     
     # Build initial state for LangGraph agent
     initial_state: TutorState = {
@@ -847,24 +867,26 @@ async def chat_panel_message(req: ChatPanelRequest):
         "risk_concepts": [],
         # Use persisted tutor state instead of always resetting to normal
         "mode": persisted_mode,
-        "current_prereq_id": persisted_tutor_state.get("current_prereq_id"),
-        "current_prereq_title": persisted_tutor_state.get("current_prereq_title"),
-        "prereq_question": persisted_tutor_state.get("prereq_question"),
+        "current_prereq_id": persisted_prereq_id,
+        "current_prereq_title": persisted_prereq_title,
+        "prereq_question": persisted_prereq_question,
         "prerequisite_chain": persisted_prereq_chain,
         "prereq_answer_correct": False,
         "max_depth": 3,
         "main_concept_id": None,  # Preserved when going deeper into prereqs
         "main_concept_title": None,
         # Verification state
-        "pending_verification_concept": persisted_tutor_state.get("pending_verification_concept"),
+        "pending_verification_concept": persisted_pending_verification,
         "pending_verification_title": None
     }
 
     
     try:
-        # Build config with thread_id for checkpointer
-        thread_id = f"chat-{req.user_id}"
+        # Scope checkpointer thread to section to avoid memory bleed across sections.
+        thread_section = section_id or "global"
+        thread_id = f"chat-{req.user_id}-{thread_section}"
         config = {"configurable": {"thread_id": thread_id}}
+        print(f"[LangGraph] Using thread_id={thread_id}")
         
         # Run the LangGraph agent
         final_state = await tutor_agent.ainvoke(initial_state, config=config)
@@ -1701,17 +1723,31 @@ async def handle_mcq_request(user_id: str, message: str, user_state: dict, conte
     
     title = section["section_title"] if section else "Gravitation"
     
+    # Get section text content for context
+    section_text = extract_section_text(section) if section else ""
+    
     # Check if open book mode
     open_book = is_open_book_request(message)
     
-    # Fetch insights for personalization
+    # Fetch insights for personalization AND to get previously asked questions
     insights = await get_insights_for_concept(user_id, current_id)
     
     # Build insight context for prompt
     insight_context = ""
+    previous_questions = []
+    
     if insights:
         misconceptions = [i for i in insights if i.get("type") == "MISCONCEPTION"]
         competencies = [i for i in insights if i.get("type") == "COMPETENCY"]
+        
+        # Extract previously asked questions from insights (questions are often stored as part of content or have mcq/quiz source_id)
+        for insight in insights:
+            source_id = insight.get("source_id", "")
+            if source_id and (source_id.startswith("mcq-") or source_id.startswith("quiz-")):
+                # The question context might be in the insight or we can derive from the fact this was asked
+                content = insight.get("content", "")
+                if content:
+                    previous_questions.append(content[:200])  # Truncate for context
         
         if misconceptions:
             insight_context += "\n\n**Student's Previous Struggles (focus questions on these areas):**\n"
@@ -1723,21 +1759,48 @@ async def handle_mcq_request(user_id: str, message: str, user_state: dict, conte
             for c in competencies[:2]:  # Limit to 2
                 insight_context += f"- {c.get('content', '')}\n"
     
+    # Build previous questions context
+    prev_questions_context = ""
+    if previous_questions:
+        prev_questions_context = f"""
+**PREVIOUSLY ASKED (do NOT repeat these or ask similar questions):**
+{chr(10).join(f'- {q}' for q in previous_questions[:5])}
+"""
+    
     client = AsyncGroq(api_key=settings.groq_api_key)
     
-    prompt = f"""Generate a multiple-choice question (MCQ) for a physics student learning about: {title}.
-{insight_context}
+    prompt = f"""Generate a CONCEPTUAL multiple-choice question (MCQ) for a physics student learning about: {title}.
+
+**SECTION CONTENT (use to understand the topic, NOT to copy text literally):**
+{section_text[:3000] if section_text else "(Section content not available)"}
+{insight_context}{prev_questions_context}
 **Instructions:**
-- If student has previous struggles, create a question that helps address those gaps
-- If student has strengths, build on them but increase difficulty slightly
-- Make the question conceptual and thought-provoking
+- Create a question that tests UNDERSTANDING and APPLICATION, NOT memorization
+- Use the section content to identify the topic, but ask about concepts, not facts from text
+- If student has previous struggles, address those conceptual gaps
+- Do NOT repeat any previously asked questions
+
+**QUESTION TYPES (pick one):**
+- "What would happen if..." (hypothetical scenario with choices)
+- "Which explanation best describes why..." (reasoning)
+- "If X increases, what happens to Y?" (cause-effect understanding)
+- Application to a new scenario
+
+**CRITICAL REQUIREMENTS:**
+- State clear assumptions so only ONE option is correct
+- Options should test understanding, not trick with wording
+- Wrong options should represent common misconceptions
+
+**EXAMPLE:**
+- BAD: "What is Kepler's first law?" → Tests recall
+- GOOD: "A newly discovered exoplanet orbits a star at a constant orbital radius (assume only gravitational interaction with the star and ignore other planets). Based on Kepler's laws, where must the star be located relative to the planet's orbit?" → Tests understanding with clear assumptions
 
 Return ONLY a valid JSON object with this structure:
 {{
-    "question": "The question text here?",
+    "question": "Conceptual question with clear assumptions?",
     "options": ["Option A", "Option B", "Option C", "Option D"],
     "correct_option": "Option A",
-    "explanation": "Why it is correct."
+    "explanation": "Why this tests understanding of the concept."
 }}
 """
 
@@ -1745,7 +1808,7 @@ Return ONLY a valid JSON object with this structure:
     try:
         response = await client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile"
+            model="openai/gpt-oss-120b"
         )
         content = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
         mcq_data = json.loads(content)
@@ -2061,6 +2124,22 @@ async def handle_toggle_chapters(user_id: str, user_state: dict, context: dict) 
             
             # SIMPLIFICATION:
             # Just return the table of contents as a focus or side panel.
+            return ConversationResponse(
+                ui=UISchema(
+                    layout="focus",
+                    panels=[{
+                        "type": "NavigationMap",
+                        "props": {
+                            "title": "Topics",
+                            "sections": toc
+                        },
+                        "animation": "fadeIn"
+                    }]
+                ),
+                conversation_context={"navigation_visible": True}
+            )
+        else:
+            # No current section - just show NavigationMap
             return ConversationResponse(
                 ui=UISchema(
                     layout="focus",
@@ -3054,18 +3133,43 @@ async def start_understanding_check(request: CheckUnderstandingRequest) -> Check
     # Generate question for first unverified concept
     first_concept = to_verify[0]
     
+    # Fetch section content to provide context for question generation
+    from app.chains.content import get_section_by_id, extract_section_text
+    section = get_section_by_id(request.section_id)
+    section_text = extract_section_text(section) if section else ""
+    
     llm = ChatGroq(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         temperature=0.5,
         api_key=settings.groq_api_key
     )
     
-    prompt = f"""Generate a simple question to check if a student understands the concept: "{first_concept['title']}" (ID: {first_concept['id']}).
+    prompt = f"""You are creating a verification question for a student learning about "{first_concept['title']}" (subconcept ID: {first_concept['id']}).
 
-The question should:
-1. Be answerable in 2-3 sentences
-2. Test conceptual understanding, not memorization
-3. Be friendly and encouraging
+**SECTION CONTENT (use this to understand what the topic covers, NOT to copy text):**
+{section_text[:3000] if section_text else "(Section content not available)"}
+
+**YOUR TASK:**
+1. Identify what "{first_concept['title']}" covers from the section above
+2. Create a CONCEPTUAL question that tests UNDERSTANDING and APPLICATION of that topic
+3. Do NOT ask literal questions from the text (e.g., "What did Kepler say about...?")
+
+**QUESTION TYPES TO USE (pick one):**
+- "What would happen if..." (hypothetical scenario)
+- "Why does..." (reasoning/explanation)
+- "How would you explain..." (application to new context)
+- "If X changed, what would happen to Y?" (cause-effect understanding)
+- "Compare/contrast..." (relationship understanding)
+
+**STRICT REQUIREMENTS:**
+- Topic must be strictly about "{first_concept['title']}" - NOT about {', '.join([c['title'] for c in to_verify[1:3]]) if len(to_verify) > 1 else 'other topics'}
+- Test understanding, NOT memorization of facts from the text
+- Include specific assumptions to make the answer unambiguous
+- Answerable in 2-3 sentences
+
+**EXAMPLE:**
+- BAD (literal): "What shape is a planet's orbit according to Kepler's first law?"
+- GOOD (conceptual with assumptions): "Consider a planet orbiting a star in our galaxy (assume only gravitational interaction between the two). If the orbit is perfectly circular, would the star still be at a special position in that orbit? Explain your reasoning."
 
 Respond with ONLY the question, nothing else."""
 
@@ -3083,6 +3187,7 @@ class VerifyUnderstandingRequest(BaseModel):
     user_id: str
     concept_id: str
     answer: str
+    question: str | None = None  # Original question for context-aware evaluation
 
 
 class VerifyUnderstandingResponse(BaseModel):
@@ -3112,23 +3217,35 @@ async def verify_understanding(request: VerifyUnderstandingRequest) -> VerifyUnd
     concept_title = concept.get("section_title", request.concept_id) if concept else request.concept_id
     
     llm = ChatGroq(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         temperature=0.3,
         api_key=settings.groq_api_key
     )
     
     # Evaluate the answer
+    # Get original question: prefer from request, fallback to user state
+    original_question = request.question
+    if not original_question:
+        from app.graph.user_state import get_user_state
+        user_state = await get_user_state(request.user_id)
+        original_question = user_state.get("last_verification_question", "") if user_state else ""
+    
     eval_prompt = f"""You are evaluating a student's understanding of "{concept_title}".
+
+Original Question: {original_question if original_question else "(Question context not available - evaluate based on concept understanding)"}
 
 Student's explanation: "{request.answer}"
 
-Evaluate if the student demonstrates adequate understanding of this concept.
-- They don't need perfect accuracy, just show they grasp the core idea.
-- Be encouraging and constructive.
+Evaluation Guidelines:
+1. If the original question stated specific assumptions or conditions, the student's answer must be consistent with those assumptions
+2. They don't need perfect accuracy, just show they grasp the core idea
+3. If the answer would be correct under different assumptions than stated in the question, mark it as FAIL but explain this in the feedback
+4. Be encouraging and constructive
+5. For any math in your feedback, use $x$ for inline math and $$equation$$ for display. NEVER use \\(...\\) or \\[...\\] notation.
 
 Respond in this format:
 VERDICT: [PASS or FAIL]
-FEEDBACK: [Your constructive feedback]"""
+FEEDBACK: [Your constructive feedback explaining why, referencing the question's assumptions if relevant]"""
 
     response = await llm.ainvoke([HumanMessage(content=eval_prompt)])
     eval_text = response.content
@@ -3211,6 +3328,11 @@ Respond with ONLY the summary sentence."""
         insights = await get_insights_for_concept(request.user_id, next_concept["id"])
         misconceptions = [i for i in insights if i.get("type") == "MISCONCEPTION"]
         
+        # Fetch section content for context
+        from app.chains.content import get_section_by_id, extract_section_text
+        section = get_section_by_id(section_id)
+        section_text = extract_section_text(section) if section else ""
+        
         # Build insight context for personalized question
         insight_context = ""
         if misconceptions:
@@ -3218,13 +3340,36 @@ Respond with ONLY the summary sentence."""
 The student previously had these misconceptions about this topic:
 {chr(10).join(f'- {m["content"]}' for m in misconceptions[:3])}
 
-Generate a question that specifically addresses these gaps and tests the corrected understanding.
+Address these gaps in your question.
 """
         
-        # Generate next question with insight context
-        prompt = f"""Generate a verification question to check if a student understands: "{next_concept['title']}".
+        # Generate next question with section content and strict focus
+        prompt = f"""You are creating a verification question for a student learning about "{next_concept['title']}" (subconcept ID: {next_concept['id']}).
+
+**SECTION CONTENT (use to understand the topic, NOT to copy text):**
+{section_text[:3000] if section_text else "(Section content not available)"}
 {insight_context}
-Be friendly and encouraging. The question should test understanding, not just recall.
+**YOUR TASK:**
+1. Identify what "{next_concept['title']}" covers from the section above
+2. Create a CONCEPTUAL question that tests UNDERSTANDING and APPLICATION
+3. Do NOT ask literal questions from the text
+
+**QUESTION TYPES TO USE (pick one):**
+- "What would happen if..." (hypothetical scenario)
+- "Why does..." (reasoning/explanation)  
+- "If X changed, what would happen to Y?" (cause-effect)
+- "How would you explain this to..." (application)
+
+**STRICT REQUIREMENTS:**
+- Topic must be strictly about "{next_concept['title']}"
+- Test understanding, NOT memorization
+- Include specific assumptions for clarity
+- Be friendly and encouraging
+
+**EXAMPLE:**
+- BAD: "According to Kepler, what is the second law?"
+- GOOD: "A comet is orbiting the Sun in a highly elongated elliptical orbit (assume no other forces except the Sun's gravity). As it moves from its farthest point (aphelion) toward its closest point (perihelion), what happens to its orbital speed? Explain why using the concept of areal velocity."
+
 Respond with ONLY the question."""
         
         q_response = await llm.ainvoke([HumanMessage(content=prompt)])
@@ -3386,7 +3531,7 @@ async def teach_subconcept(request: TeachSubconceptRequest):
     
     # Generate explanation using LLM
     llm = ChatGroq(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         temperature=0.5,
         api_key=settings.groq_api_key
     )
@@ -3411,7 +3556,7 @@ Reference material (for context ONLY):
 1. ONLY explain "{subconcept_title}" - nothing else from this section
 2. Keep explanation to 2-3 short paragraphs maximum
 3. Start with: "Let's learn about **{subconcept_title}**."
-4. Use LaTeX for equations: $$equation$$
+4. Use LaTeX: $x$ for inline, $$equation$$ for display. NEVER use \\(...\\) notation.
 5. Do NOT explain other topics or concepts
 6. Do NOT ask follow-up questions - just explain clearly
 7. End naturally (verification will be handled separately)

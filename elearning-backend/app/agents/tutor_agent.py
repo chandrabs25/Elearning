@@ -157,6 +157,12 @@ async def retrieve_context(state: TutorState) -> TutorState:
             prereq_insights = await get_prerequisite_insights(user_id, concept_id)
             state["prerequisite_insights"] = prereq_insights
             print(f"[Prerequisites] Found learning status for {len(prereq_insights)} prerequisites")
+            for p in prereq_insights:
+                insight_count = len(p.get("insights", []))
+                if insight_count > 0:
+                    print(f"  → Prereq '{p.get('title')}' ({p.get('id')}): {insight_count} insights")
+                    for i in p.get("insights", [])[:3]:
+                        print(f"     - [{i.get('type')}] {i.get('content', '')[:80]}...")
         else:
             state["insights"] = []
             state["prerequisite_insights"] = []
@@ -191,20 +197,31 @@ async def analyze_student_context(state: TutorState) -> TutorState:
     enabling proactive teaching adjustments.
     """
     insights = state.get("insights", [])
+    prereq_insights = state.get("prerequisite_insights", [])
     
-    # Categorize insights by type
+    # Categorize insights from current concept by type
     misconceptions = [i for i in insights if i.get("type") == "MISCONCEPTION"]
     competencies = [i for i in insights if i.get("type") == "COMPETENCY"]
+    
+    # ALSO extract misconceptions and competencies from prerequisite insights
+    # This ensures we can reference them when introducing prerequisites
+    for prereq in prereq_insights:
+        for insight in prereq.get("insights", []):
+            if insight.get("type") == "MISCONCEPTION":
+                misconceptions.append(insight)
+            elif insight.get("type") == "COMPETENCY":
+                competencies.append(insight)
     
     state["active_misconceptions"] = misconceptions
     state["active_competencies"] = competencies
     
-    # Identify risk concepts - concepts where student has struggled before
-    # These are extracted from misconception insights' concept_ids
+    # Identify risk concepts - concepts where student has struggled before.
+    # Support both `concept_ids` (list) and legacy/singular `concept_id`.
     risk_concepts = set()
     for m in misconceptions:
-        # Get concept_ids from the insight if available
-        concept_ids = m.get("concept_ids", [])
+        concept_ids = set(m.get("concept_ids", []) or [])
+        if m.get("concept_id"):
+            concept_ids.add(m.get("concept_id"))
         if concept_ids:
             risk_concepts.update(concept_ids)
     
@@ -212,7 +229,7 @@ async def analyze_student_context(state: TutorState) -> TutorState:
     
     # Log context analysis results
     if misconceptions:
-        print(f"[Context] Found {len(misconceptions)} misconceptions, {len(risk_concepts)} risk concepts")
+        print(f"[Context] Found {len(misconceptions)} total misconceptions ({len([m for m in misconceptions if m in insights])} current, {len(misconceptions) - len([m for m in misconceptions if m in insights])} prerequisite), {len(risk_concepts)} risk concepts")
     if competencies:
         print(f"[Context] Found {len(competencies)} competencies")
     
@@ -229,7 +246,7 @@ async def understand_question(state: TutorState) -> TutorState:
     if state.get("mode") == "waiting_to_resume":
         try:
             llm = ChatGroq(
-                model="llama-3.3-70b-versatile",
+                model="openai/gpt-oss-120b",
                 temperature=0.1,
                 api_key=settings.groq_api_key
             )
@@ -269,7 +286,7 @@ Respond with ONLY one word: YES_CONTINUE, NO_CONTINUE, or UNCLEAR."""
         # Check if the response is actually an attempt to answer, or something unrelated
         try:
             llm = ChatGroq(
-                model="llama-3.3-70b-versatile",
+                model="openai/gpt-oss-120b",
                 temperature=0.1,
                 api_key=settings.groq_api_key
             )
@@ -321,7 +338,7 @@ Respond with ONLY one word: ANSWERING, CONFUSED, or OFF_TOPIC."""
         try:
              # Use LLM to classify response
             llm = ChatGroq(
-                model="llama-3.3-70b-versatile",
+                model="openai/gpt-oss-120b",
                 temperature=0.1,
                 api_key=settings.groq_api_key
             )
@@ -359,7 +376,7 @@ Respond with ONLY one word: KNOWS_PREREQS, NEEDS_EXPLANATION, or OTHER."""
     try:
         # Use LLM to classify message: on-topic, off-topic, or confused
         llm = ChatGroq(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             temperature=0.1,
             api_key=settings.groq_api_key
         )
@@ -426,7 +443,7 @@ async def ask_prereq_question(state: TutorState) -> TutorState:
     from app.config import settings
     
     llm = ChatGroq(
-        model="llama-3.3-70b-versatile", 
+        model="openai/gpt-oss-120b", 
         temperature=0.5,
         api_key=settings.groq_api_key
     )
@@ -486,7 +503,12 @@ Description: {prereq_desc}
 Generate a supportive, non-judgmental question to check if they now understand this concept.
 Frame it as a quick refresher, not a test.
 
-Format: "Let's do a quick warm-up before we tackle {state.get('current_concept_title', 'this topic')}: [YOUR QUESTION HERE]"
+**IMPORTANT: Make the question specific and unambiguous:**
+- State any assumptions or conditions explicitly
+- Ensure the question has only ONE correct interpretation
+- Example: Instead of "What affects gravitational force?", ask "If you double the distance between two objects while keeping their masses the same, what happens to the gravitational force between them?"
+
+Format: "Let's do a quick warm-up before we tackle {state.get('current_concept_title', 'this topic')}: [YOUR SPECIFIC QUESTION HERE]"
 
 Be extra warm and encouraging since this was tricky for them before."""
     else:
@@ -501,8 +523,13 @@ Description: {prereq_desc}
 Generate a simple, conceptual question (NOT a calculation) to check if the student understands this prerequisite.
 The question should be answerable in 1-2 sentences.
 
+**IMPORTANT: Make the question specific and unambiguous:**
+- State any assumptions or conditions explicitly (e.g., "Assuming no air resistance...", "For a uniformly dense sphere...")
+- Ensure the question has only ONE correct answer - avoid questions that could be correct under different interpretations
+- Example: Instead of "How does gravity work?", ask "If you take a ball to the top of a tall mountain, will it weigh more, less, or the same as at sea level? (Ignore centrifugal effects)"
+
 Format your response as:
-"Before we dive into {state.get('current_concept_title', 'this topic')}, let me check something: [YOUR QUESTION HERE]"
+"Before we dive into {state.get('current_concept_title', 'this topic')}, let me check something: [YOUR SPECIFIC QUESTION HERE]"
 
 Be friendly and encouraging."""
 
@@ -525,7 +552,7 @@ async def evaluate_prereq_answer(state: TutorState) -> TutorState:
     from app.graph.user_state import reconcile_insights
     
     llm = ChatGroq(
-        model="llama-3.3-70b-versatile", 
+        model="openai/gpt-oss-120b", 
         temperature=0.2,
         api_key=settings.groq_api_key
     )
@@ -607,7 +634,7 @@ async def explain_connection(state: TutorState) -> TutorState:
     from app.graph.user_state import reconcile_insights
     
     llm = ChatGroq(
-        model="llama-3.3-70b-versatile", 
+        model="openai/gpt-oss-120b", 
         temperature=0.5,
         api_key=settings.groq_api_key
     )
@@ -651,7 +678,7 @@ Main topic content:
 Your response should:
 1. Briefly acknowledge their correct understanding (1 sentence)
 2. Explain how the prerequisite connects to and enables understanding of the current topic (2-3 paragraphs)
-3. Use LaTeX for equations ($$...$$)
+3. Use LaTeX: $x$ for inline, $$equation$$ for display. Do NOT use \(...\) notation.
 4. Now explain the current topic clearly
 
 Be encouraging!"""
@@ -669,7 +696,7 @@ async def go_deeper_prereq(state: TutorState) -> TutorState:
     from app.config import settings
     
     llm = ChatGroq(
-        model="llama-3.3-70b-versatile", 
+        model="openai/gpt-oss-120b", 
         temperature=0.5,
         api_key=settings.groq_api_key
     )
@@ -711,7 +738,7 @@ Let me ask you about something even more fundamental..."""
 
 Explain this prerequisite concept from the ground up, assuming minimal prior knowledge.
 Be very clear and use simple analogies where possible.
-Use LaTeX for equations ($$...$$).
+Use LaTeX: $x$ for inline math, $$equation$$ for display. Never use \(...\) notation.
 
 After explaining, ask if they now understand better."""
 
@@ -760,7 +787,7 @@ async def answer_question(state: TutorState) -> TutorState:
     )
     
     llm = ChatGroq(
-        model="llama-3.3-70b-versatile", 
+        model="openai/gpt-oss-120b", 
         temperature=0.5,
         api_key=settings.groq_api_key
     )
@@ -772,28 +799,72 @@ async def answer_question(state: TutorState) -> TutorState:
     # Check if we have prerequisites to introduce first
     prereqs = state.get("prerequisites", [])
     prereq_list = ", ".join([p["title"] for p in prereqs]) if prereqs else ""
+    current_mode = state.get("mode", "normal")
+    print(f"[answer_question] prereq_list={prereq_list or 'EMPTY'}, mode={current_mode}")
+    
+    # Build misconception context for prerequisites
+    misconceptions = state.get("active_misconceptions", [])
+    risk_concepts = set(state.get("risk_concepts", []))
+    prereq_ids = {p.get("id") for p in prereqs if p.get("id")}
+    
+    # Find misconceptions related to prerequisites
+    prereq_misconceptions = []
+    risky_prereqs = []
+    for prereq in prereqs:
+        prereq_id = prereq.get("id")
+        if prereq_id and prereq_id in risk_concepts:
+            risky_prereqs.append(prereq.get("title", prereq_id))
+    
+    # Get specific misconception details for prerequisites
+    for m in misconceptions:
+        concept_ids = set(m.get("concept_ids", []) or [])
+        if m.get("concept_id"):
+            concept_ids.add(m.get("concept_id"))
+        
+        # Check if this misconception is about any prerequisite
+        if concept_ids & prereq_ids:
+            content = m.get("content", "")
+            if content:
+                prereq_misconceptions.append(content)
+    
+    # Build misconception context string
+    misconception_context = ""
+    if risky_prereqs or prereq_misconceptions:
+        misconception_context = "\n\n**IMPORTANT - Student has previous struggles with prerequisites:**\n"
+        if risky_prereqs:
+            misconception_context += f"Prerequisites where student struggled: {', '.join(risky_prereqs)}\n"
+        if prereq_misconceptions:
+            misconception_context += "Specific misconceptions to address:\n"
+            for mc in prereq_misconceptions[:3]:  # Limit to top 3
+                misconception_context += f"  - {mc}\n"
+        misconception_context += "\nMention these struggles when introducing prerequisites to show you're aware and will help.\n"
     
     if prereq_list and state.get("mode") != "checking_prereq_familiarity":
         # Introduce prerequisites first
-        system_prompt = f"""You are an AI physics tutor helping a student learn about:
-**{section_title}**
+        print(f"[answer_question] → PREREQ INTRO BRANCH (prereqs exist, mode is not checking_prereq_familiarity)")
+        
+        # CRITICAL: Guidelines MUST come FIRST so LLM pays attention to them
+        system_prompt = f"""You are an AI physics tutor. Before teaching **{section_title}**, you MUST ask about prerequisites.
 
-Textbook content:
----
-{state.get('concept_content', '')[:2500]}
----
+=== YOUR TASK (FOLLOW EXACTLY) ===
+1. Give a 1-sentence introduction to {section_title}
+2. Say: "Before we dive in, this topic builds on: **{prereq_list}**"
+3. {f'Acknowledge that the student struggled with "{", ".join(risky_prereqs)}" before.' if risky_prereqs else 'Explain these are key foundation concepts.'}
+4. End with EXACTLY this question: "Are you comfortable with these concepts, or would you like me to review them first?"
 
-Prerequisites for this topic: {prereq_list}
+=== RULES ===
+- Do NOT teach {section_title} yet
+- Do NOT explain the prerequisites in detail
+- WAIT for the student's response about their familiarity
+{misconception_context}
 
-Guidelines:
-1. Briefly introduce the topic based on the student's question.
-2. Explicitly list the prerequisite concepts ({prereq_list}).
-3. Explain that understanding these is key to mastering the current topic.
-4. Ask the student: "Are you familiar with these concepts and how they relate to {section_title}?"
-5. Do NOT explain the prerequisites in detail yet - wait for their answer.
+=== REFERENCE (for your context only) ===
+Topic: {section_title}
+Prerequisites: {prereq_list}
 """
         state["mode"] = "checking_prereq_familiarity"
     else:
+        print(f"[answer_question] → TEACHING BRANCH (prereq_list empty={not prereq_list}, mode={state.get('mode')})")
         # Progressive sub-concept teaching mode
         current_subconcept_id = state.get("current_subconcept_id")
         
@@ -921,7 +992,7 @@ Subconcept: {subconcept_title}
 === CRITICAL RULES ===
 1. ONLY teach the subconcept "{subconcept_title}" - DO NOT explain other concepts from this section
 2. Keep your explanation CONCISE (2-3 paragraphs maximum)
-3. Use LaTeX for equations: $$equation$$
+3. Use LaTeX: $x$ for inline math, $$equation$$ for display. NEVER use \(...\) notation.
 4. DO NOT give multiple choice options or ask what topic they want next
 5. End by saying you'll now check their understanding
 
@@ -931,6 +1002,7 @@ Subconcept: {subconcept_title}
 3. End with: "Let me check your understanding of this concept..."{suggestion}"""
     
     # Build messages for LLM
+    print(f"[answer_question] system_prompt starts with: {system_prompt[:200]}...")
     messages_for_llm = [SystemMessage(content=system_prompt)]
     for msg in state.get("messages", [])[-5:]:
         if hasattr(msg, 'content'):
@@ -1034,7 +1106,7 @@ async def continue_topic(state: TutorState) -> TutorState:
     section_content = state.get('concept_content', '')[:1500]
     
     llm = ChatGroq(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         temperature=0.5,
         api_key=settings.groq_api_key
     )
@@ -1059,7 +1131,7 @@ Reference material (for context ONLY):
 1. ONLY explain "{current_sc_title}" - nothing else
 2. Keep explanation to 2-3 short paragraphs maximum
 3. Start with: "Great! Let's begin with **{current_sc_title}**."
-4. Use LaTeX for equations: $$equation$$
+4. Use LaTeX: $x$ for inline, $$equation$$ for display. NEVER use \(...\) notation.
 5. Do NOT explain other topics or laws
 6. Do NOT ask follow-up questions - just explain the concept
 7. End your explanation naturally (I will add a verification question)
@@ -1120,12 +1192,13 @@ async def explain_prereqs(state: TutorState) -> TutorState:
     from app.chains.content import get_section_by_id, extract_section_text
     
     llm = ChatGroq(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         temperature=0.5,
         api_key=settings.groq_api_key
     )
     
     prereqs = state.get("prerequisites", [])
+    prereq_insights = state.get("prerequisite_insights", [])
     prereq_titles = ", ".join([p["title"] for p in prereqs if p.get("title")])
     
     # Fetch actual content for each prerequisite from gravity.json
@@ -1138,7 +1211,7 @@ async def explain_prereqs(state: TutorState) -> TutorState:
             # Try to get content from gravity.json
             section = get_section_by_id(prereq_id)
             if section:
-                content_text = extract_section_text(section, max_length=800)
+                content_text = extract_section_text(section)
                 prereq_content_blocks.append(f"### {prereq_title}\n{content_text}")
             else:
                 # Fallback to description if no section found
@@ -1150,6 +1223,20 @@ async def explain_prereqs(state: TutorState) -> TutorState:
             prereq_content_blocks.append(f"### {prereq_title}\n{description or 'Explain the fundamental principles.'}")
     
     prereq_content = "\n\n".join(prereq_content_blocks) if prereq_content_blocks else "No detailed content available."
+
+    # Add targeted misconception context so the explanation addresses known gaps.
+    misconception_lines = []
+    for p in prereq_insights:
+        p_title = p.get("title", p.get("id", "Unknown prerequisite"))
+        for insight in p.get("insights", []):
+            if insight.get("type") == "MISCONCEPTION" and insight.get("content"):
+                misconception_lines.append(f"- {p_title}: {insight.get('content')}")
+    misconception_context = ""
+    if misconception_lines:
+        misconception_context = (
+            "\n**Known prerequisite misconceptions to address explicitly:**\n"
+            + "\n".join(misconception_lines[:5])
+        )
     
     system_prompt = f"""You are an AI physics tutor. The student needs help understanding prerequisites for **{state.get('current_concept_title')}**.
 
@@ -1157,12 +1244,14 @@ Prerequisites to explain: {prereq_titles}
 
 **Reference Content for Each Prerequisite:**
 {prereq_content}
+{misconception_context}
 
 **Guidelines:**
 1. Use the reference content above to explain each prerequisite clearly and accurately.
 2. Use analogies if helpful to make concepts more accessible.
 3. Relate each prerequisite back to why it's important for understanding {state.get('current_concept_title')}.
-4. After explaining, ask: "Does that make sense? Are you ready to continue with {state.get('current_concept_title')}?"
+4. If misconceptions are listed, explicitly correct them with a short contrast ("common mistake" vs "correct idea").
+5. After explaining, ask: "Does that make sense? Are you ready to continue with {state.get('current_concept_title')}?"
 """
 
     response = await llm.ainvoke([SystemMessage(content=system_prompt)])
@@ -1184,7 +1273,7 @@ async def answer_off_topic(state: TutorState) -> TutorState:
     from app.config import settings
     
     llm = ChatGroq(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         temperature=0.6,
         api_key=settings.groq_api_key
     )
@@ -1246,8 +1335,10 @@ def route_after_understand(state: TutorState) -> Literal["ask_prereq_question", 
         # This prevents re-testing prereqs across different sessions
         competency_concept_ids = set()
         for comp in state.get("active_competencies", []):
-            for cid in comp.get("concept_ids", []):
+            for cid in comp.get("concept_ids", []) or []:
                 competency_concept_ids.add(cid)
+            if comp.get("concept_id"):
+                competency_concept_ids.add(comp.get("concept_id"))
         
         # Combine session-tested and competency-proven prereqs
         already_proven = already_tested | competency_concept_ids
@@ -1391,7 +1482,7 @@ async def evaluate_quiz_answer(
     from app.config import settings
     
     llm = ChatGroq(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         temperature=0.3,
         api_key=settings.groq_api_key
     )
@@ -1408,6 +1499,7 @@ Evaluate the student's answer.
 - If they have the right idea but missing key parts, mark it PARTIAL.
 - If they are fundamentally wrong, mark it WRONG.
 - Be encouraging but strict on physics principles.
+- For any math in your feedback, use $x$ for inline math and $$equation$$ for display. NEVER use \\(...\\) or \\[...\\] notation.
 
 Response format (exactly as shown):
 Status: [CORRECT / PARTIAL / WRONG]
@@ -1475,4 +1567,3 @@ Respond with ONLY the summary sentence."""
             "is_partial": False,
             "feedback": "Unable to evaluate your answer. Please try again."
         }
-

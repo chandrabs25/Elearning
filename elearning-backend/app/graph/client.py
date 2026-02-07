@@ -21,6 +21,8 @@ class Neo4jClient:
                 max_connection_lifetime=300,  # 5 minutes
                 max_connection_pool_size=10,
                 connection_acquisition_timeout=30,
+                # Silence DBMS notifications (e.g., missing property warnings)
+                notifications_disabled_categories=["UNRECOGNIZED"],
             )
         return self._driver
     
