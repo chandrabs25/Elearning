@@ -80,5 +80,17 @@ Because the **Insight Engine** is separate from the content, it can travel with 
 - **University:** It helps you navigate Engineering Mechanics because it knows you mastered the basics years ago.
 
 This isn’t just about passing a test. It’s about building a digital extension of your own brain, one that organizes the world’s knowledge into a structure you can actually learn, and remembers your journey so you never have to start from scratch again.
+<img width="5911" height="4050" alt="Untitled diagram-2026-02-07-092915" src="https://github.com/user-attachments/assets/ce6c8d3f-40b9-4424-a513-3cd46bc29566" /><img width="3636" height="2435" alt="Kepler&#39;s Laws Insight Flow-2026-02-05-130232" src="https://github.com/user-attachments/assets/6aaf0cc6-1639-43ea-8d5b-be4dee2cac80" />
+<img width="3636" height="2435" alt="Kepler&#39;s Laws Insight Flow-2026-02-05-130312" src="https://github.com/user-attachments/assets/6cea2cbf-4534-4d9d-abd0-5b44c8b49eb9" />
+
+<img width="3636" height="2435" alt="Kepler&#39;s Laws Insight Flow-2026-02-05-130335" src="https://github.com/user-attachments/assets/7297c843-497e-43fb-8ed9-c7e<img width="4655" height="3465" alt="Kepler&#39;s Laws Insight Flow-2026-02-05-130400" src="https://github.com/user-attachments/assets/0c90b8cc-6f50-4305-a4a6-03a90e7d549c" />
+86806cd32" />
+<img width="8124" height="3465" alt="Kepler&#39;s Laws Insight Flow-2026-02-05-130436" src="https://github.com/user-attachments/assets/acd133d1-c25d-495a-ba45-35e91d11ed60" />
+<img width="8192" height="3041" alt="Kepler&#39;s Laws Insight Flow-2026-02-05-130740" src="https://github.com/user-attachments/assets/137f99e0-312d-46cb-ab26-31c421cec6ff<img width="5595" height="2435" alt="Kepler&#39;s Laws Insight Flow-2026-02-05-130830" src="https://github.com/user-attachments/assets/45cea945-0576-4ca2-8841-b82e4861c013" />
+" /><img width="8192" height="4837" alt="Kepler&#39;s Laws Insight Flow-2026-02-05-130951" src="https://github.com/user-attachments/assets/e5e3f70a-d229-402d-a6e1-800c23370877" />
+
+
+<img width="8192" height="1417" alt="Kepler&#39;s Laws Insight Flow-2026-02-05-141733" src="https://github.com/user-attachments/assets/8203421f-7f58-48b8-99f4-2f11<img width="5606" height="4995" alt="Kepler&#39;s Laws Insight Flow-2026-02-05-141940" src="https://github.com/user-attachments/assets/69011169-82a3-49c7-a6ef-d1af9f674659" />
+6bad97b7" /><img width="8192" height="2827" alt="Kepler&#39;s Laws Insight Flow-2026-02-05-142147" src="https://github.com/user-attachments/assets/f0b7aa33-9d28-4c53-ade3-d228e98f06ed" />
 
 
