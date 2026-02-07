@@ -107,22 +107,26 @@ async def reset_progress_endpoint(req: ClearHistoryRequest):
     
     deleted_count = results[0]["deleted"] if results else 0
     
-    # Invalidate cache
+    # Invalidate caches
     await cache_delete(f"user_state:{req.user_id}")
-    await cache_delete(f"tutor_state:{req.user_id}")
+    await cache_delete(f"tutor_state:{req.user_id}:{req.section_id}")
 
-    # Also clear persisted tutor flow state so next chat starts fresh.
+    # Clear persisted tutor flow state. Use full reset to avoid malformed JSON/map edge cases.
     clear_tutor_state_query = """
     MATCH (u:User {id: $user_id})
-    SET u.tutor_mode = "normal",
-        u.tutor_section_id = null,
-        u.tutor_prereq_id = null,
-        u.tutor_prereq_title = null,
-        u.tutor_prereq_question = null,
-        u.tutor_prereq_chain = "[]",
-        u.tutor_pending_verification = null
+    SET u.tutor_states = "{}"
     """
     await neo4j_client.execute_write(clear_tutor_state_query, user_id=req.user_id)
+
+    # Best-effort: clear section-scoped tutor cache for all known sections.
+    try:
+        toc = get_table_of_contents()
+        for item in toc:
+            sid = item.get("id")
+            if sid and sid.startswith("7."):
+                await cache_delete(f"tutor_state:{req.user_id}:{sid}")
+    except Exception as e:
+        print(f"[reset-progress] Tutor cache sweep skipped: {e}")
     
     return {"success": True, "message": f"Reset progress for section {req.section_id}", "deleted_insights": deleted_count}
 
@@ -1011,6 +1015,12 @@ def parse_response_to_content(text: str) -> list:
     
     stripped = text.strip()
     
+    def _normalize_text_item(item: dict) -> dict:
+        """Normalize escaped newlines and keep expected text item shape."""
+        if item.get("type") == "text" and isinstance(item.get("text"), str):
+            item["text"] = item["text"].replace("\\n", "\n")
+        return item
+
     # Check if the LLM returned structured content directly (Python dict/list format)
     # This handles the case where LLM returns: [{'type': 'text', 'text': '...'}]
     if stripped.startswith("[{") or stripped.startswith("[{'"):
@@ -1021,9 +1031,9 @@ def parse_response_to_content(text: str) -> list:
                 valid_items = []
                 for item in parsed:
                     if "type" in item:
-                        valid_items.append(item)
+                        valid_items.append(_normalize_text_item(item))
                     elif "text" in item:
-                        valid_items.append({"type": "text", "text": item["text"]})
+                        valid_items.append(_normalize_text_item({"type": "text", "text": item["text"]}))
                 if valid_items:
                     return valid_items
         except (ValueError, SyntaxError):
@@ -1036,9 +1046,30 @@ def parse_response_to_content(text: str) -> list:
                 valid_items = []
                 for item in parsed:
                     if isinstance(item, dict) and "type" in item:
-                        valid_items.append(item)
+                        valid_items.append(_normalize_text_item(item))
                 if valid_items:
                     return valid_items
+        except json.JSONDecodeError:
+            pass
+
+    # Handle single dict payload: {'type': 'text', 'text': '...'}
+    if stripped.startswith("{") and ("'type'" in stripped or '"type"' in stripped):
+        try:
+            parsed = ast.literal_eval(stripped)
+            if isinstance(parsed, dict):
+                if "type" in parsed:
+                    return [_normalize_text_item(parsed)]
+                if "text" in parsed:
+                    return [_normalize_text_item({"type": "text", "text": parsed["text"]})]
+        except (ValueError, SyntaxError):
+            pass
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, dict):
+                if "type" in parsed:
+                    return [_normalize_text_item(parsed)]
+                if "text" in parsed:
+                    return [_normalize_text_item({"type": "text", "text": parsed["text"]})]
         except json.JSONDecodeError:
             pass
     
@@ -1068,9 +1099,9 @@ def parse_response_to_content(text: str) -> list:
                         for item in parsed:
                             if isinstance(item, dict):
                                 if "type" in item:
-                                    items.append(item)
+                                    items.append(_normalize_text_item(item))
                                 elif "text" in item:
-                                    items.append({"type": "text", "text": item["text"]})
+                                    items.append(_normalize_text_item({"type": "text", "text": item["text"]}))
                 except (ValueError, SyntaxError):
                     # If parsing fails, add as text
                     if line:
@@ -1080,6 +1111,7 @@ def parse_response_to_content(text: str) -> list:
             return items
     
     # Fallback: Standard text parsing with LaTeX support
+    text = text.replace("\\n", "\n")
     items = []
     
     # Split by block equations ($$...$$)

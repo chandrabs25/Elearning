@@ -17,6 +17,7 @@ class TutorState(TypedDict):
     concept_content: str | None  # Retrieved content from gravity.json
     prerequisites: list[dict]    # Prerequisite concepts from Neo4j
     insights: list[dict]         # User insights for current concept (from graph)
+    prerequisite_insights: list[dict]  # Learning status and insights for prerequisites
     
     # Sub-concept progressive teaching
     current_subconcept_id: str | None  # Current sub-concept (e.g., "7.3.1")
@@ -35,6 +36,7 @@ class TutorState(TypedDict):
     current_prereq_title: str | None
     prereq_question: str | None   # The question we asked about the prerequisite
     prerequisite_chain: list[str]  # Stack of prerequisites traversed
+    risky_prereq_ids: list[str]  # Prereqs where student has prior misconceptions
     prereq_answer_correct: bool   # Whether student answered prereq question correctly
     max_depth: int  # Maximum prerequisite depth (prevent infinite loops)
     
@@ -373,6 +375,63 @@ Respond with ONLY one word: KNOWS_PREREQS, NEEDS_EXPLANATION, or OTHER."""
             print(f"[Socratic] Familiarity check error: {e}")
             state["mode"] = "normal"
 
+    # Handle risky prereq choice (verify vs skip, with graceful explain fallback)
+    if state.get("mode") == "offering_risky_choice":
+        try:
+            llm = ChatGroq(
+                model="openai/gpt-oss-120b",
+                temperature=0.1,
+                api_key=settings.groq_api_key
+            )
+            
+            risky_prereq_ids = state.get("risky_prereq_ids", [])
+            prereqs = state.get("prerequisites", [])
+            risky_titles = [p.get("title", p.get("id")) for p in prereqs if p.get("id") in risky_prereq_ids]
+            
+            prompt = f"""The tutor asked the student if they want:
+1. A quick verification question for the risky prerequisites ({', '.join(risky_titles)}), OR
+2. To skip and proceed directly to the current section (if confident)
+
+Student response: "{last_message}"
+
+Classify the student's choice:
+- WANTS_EXPLANATION: Student says "explain", "review", "teach me", "I don't remember", etc.
+- WANTS_VERIFICATION: Student says "test me", "quiz me", "ask me a question", "quick question", "verify", etc.
+- CONFIDENT: Student says "I'm fine", "I know it", "skip", "let's continue", "proceed", etc.
+- OTHER: Student asks something unrelated
+
+Respond with ONLY one word: WANTS_EXPLANATION, WANTS_VERIFICATION, CONFIDENT, or OTHER."""
+
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            classification = response.content.strip().upper()
+            
+            print(f"[Socratic] Risky prereq choice: {classification}")
+            
+            if "WANTS_EXPLANATION" in classification:
+                state["mode"] = "explain_prereqs"
+                return state
+            elif "WANTS_VERIFICATION" in classification:
+                state["mode"] = "needs_prereq_check"
+                # Set current prereq to the first risky one
+                if risky_prereq_ids:
+                    first_risky = risky_prereq_ids[0]
+                    for p in prereqs:
+                        if p.get("id") == first_risky:
+                            state["current_prereq_id"] = first_risky
+                            state["current_prereq_title"] = p.get("title", first_risky)
+                            break
+                return state
+            elif "CONFIDENT" in classification:
+                state["mode"] = "ready_to_continue"
+                return state
+            else:
+                # OTHER - fallback to normal
+                state["mode"] = "normal"
+                
+        except Exception as e:
+            print(f"[Socratic] Risky choice error: {e}")
+            state["mode"] = "normal"
+
     try:
         # Use LLM to classify message: on-topic, off-topic, or confused
         llm = ChatGroq(
@@ -453,12 +512,13 @@ async def ask_prereq_question(state: TutorState) -> TutorState:
     already_tested = state.get("prerequisite_chain", [])
     risk_concepts = set(state.get("risk_concepts", []))
     
-    # Prioritize risky prereqs first, then others
+    # Prioritize risky prereqs first, then others.
+    # Treat subsection risk (e.g., 7.2.1) as risky for parent prerequisite (7.2).
     prereq = None
     for p in prereqs:
         pid = p.get("id")
         if pid and pid not in already_tested:
-            if pid in risk_concepts:
+            if any(rc == pid or rc.startswith(pid + ".") for rc in risk_concepts):
                 prereq = p  # Found a risky prereq - test this first
                 break
     
@@ -477,7 +537,7 @@ async def ask_prereq_question(state: TutorState) -> TutorState:
     prereq_id = prereq.get("id", "")
     prereq_title = prereq.get("title", "this concept")
     prereq_desc = prereq.get("description", "")
-    is_risky = prereq_id in risk_concepts
+    is_risky = any(rc == prereq_id or rc.startswith(prereq_id + ".") for rc in risk_concepts)
     
     # Get more content for the prerequisite if available
     prereq_content = ""
@@ -803,6 +863,17 @@ async def answer_question(state: TutorState) -> TutorState:
     print(f"[answer_question] prereq_list={prereq_list or 'EMPTY'}, mode={current_mode}")
     
     # Build misconception context for prerequisites
+    def normalize_latex_delimiters(text: str) -> str:
+        """Normalize legacy \\(...\\)/\\[...\\] delimiters to $...$/$$...$$ for UI rendering."""
+        if not text:
+            return text
+        return (
+            text.replace("\\[", "$$")
+            .replace("\\]", "$$")
+            .replace("\\(", "$")
+            .replace("\\)", "$")
+        )
+
     misconceptions = state.get("active_misconceptions", [])
     risk_concepts = set(state.get("risk_concepts", []))
     prereq_ids = {p.get("id") for p in prereqs if p.get("id")}
@@ -810,10 +881,18 @@ async def answer_question(state: TutorState) -> TutorState:
     # Find misconceptions related to prerequisites
     prereq_misconceptions = []
     risky_prereqs = []
+    risky_prereq_ids = []
     for prereq in prereqs:
         prereq_id = prereq.get("id")
-        if prereq_id and prereq_id in risk_concepts:
-            risky_prereqs.append(prereq.get("title", prereq_id))
+        if prereq_id:
+            # Check if any risk_concept is this prereq or a subconcept of it
+            is_risky = any(
+                rc == prereq_id or rc.startswith(prereq_id + ".")
+                for rc in risk_concepts
+            )
+            if is_risky:
+                risky_prereqs.append(prereq.get("title", prereq_id))
+                risky_prereq_ids.append(prereq_id)
     
     # Get specific misconception details for prerequisites
     for m in misconceptions:
@@ -821,11 +900,21 @@ async def answer_question(state: TutorState) -> TutorState:
         if m.get("concept_id"):
             concept_ids.add(m.get("concept_id"))
         
-        # Check if this misconception is about any prerequisite
-        if concept_ids & prereq_ids:
+        # Check if this misconception is about any prerequisite (using prefix match)
+        # Misconceptions may have subconcept IDs like "7.2.1" while prereq is "7.2"
+        is_related = False
+        for cid in concept_ids:
+            for prereq_id in prereq_ids:
+                if cid == prereq_id or cid.startswith(prereq_id + "."):
+                    is_related = True
+                    break
+            if is_related:
+                break
+        
+        if is_related:
             content = m.get("content", "")
             if content:
-                prereq_misconceptions.append(content)
+                prereq_misconceptions.append(normalize_latex_delimiters(content))
     
     # Build misconception context string
     misconception_context = ""
@@ -841,30 +930,56 @@ async def answer_question(state: TutorState) -> TutorState:
     
     if prereq_list and state.get("mode") != "checking_prereq_familiarity":
         # Introduce prerequisites first
-        print(f"[answer_question] → PREREQ INTRO BRANCH (prereqs exist, mode is not checking_prereq_familiarity)")
-        
-        # CRITICAL: Guidelines MUST come FIRST so LLM pays attention to them
-        system_prompt = f"""You are an AI physics tutor. Before teaching **{section_title}**, you MUST ask about prerequisites.
+        if risky_prereqs:
+            # RISKY PREREQS PATH: mention misconception + offer verify or skip
+            risky_list = ", ".join(risky_prereqs)
+            system_prompt = f"""You are a caring AI physics tutor. Before teaching **{section_title}**, you need to address prerequisite concepts where the student has struggled before.
+
+=== YOUR TASK (FOLLOW EXACTLY) ===
+1. Give a warm 1-sentence introduction to {section_title}
+2. Say: "Before we dive in, this topic builds on some concepts: **{prereq_list}**"
+3. Acknowledge gently: "I noticed you had some difficulty with **{risky_list}** before - that's completely normal!"
+4. Offer the student a choice with EXACTLY this phrasing:
+   "Would you like me to:
+   - Give you a **quick question** to check if you've got it now, OR
+   - **Skip** this check and jump right into {section_title}."
+
+=== RULES ===
+- Do NOT teach {section_title} yet
+- Do NOT explain the prerequisites in detail yet
+- Be warm and non-judgmental about past struggles
+- WAIT for the student's choice
+{misconception_context}
+
+=== REFERENCE ===
+Topic: {section_title}
+Prerequisites: {prereq_list}
+Risky (struggled before): {risky_list}
+"""
+            state["mode"] = "offering_risky_choice"
+            # Store risky prerequisite IDs for follow-up verification routing.
+            state["risky_prereq_ids"] = risky_prereq_ids
+        else:
+            # NON-RISKY PATH: Simple familiarity check
+            system_prompt = f"""You are an AI physics tutor. Before teaching **{section_title}**, you MUST ask about prerequisites.
 
 === YOUR TASK (FOLLOW EXACTLY) ===
 1. Give a 1-sentence introduction to {section_title}
 2. Say: "Before we dive in, this topic builds on: **{prereq_list}**"
-3. {f'Acknowledge that the student struggled with "{", ".join(risky_prereqs)}" before.' if risky_prereqs else 'Explain these are key foundation concepts.'}
+3. Explain these are key foundation concepts.
 4. End with EXACTLY this question: "Are you comfortable with these concepts, or would you like me to review them first?"
 
 === RULES ===
 - Do NOT teach {section_title} yet
 - Do NOT explain the prerequisites in detail
 - WAIT for the student's response about their familiarity
-{misconception_context}
 
-=== REFERENCE (for your context only) ===
+=== REFERENCE ===
 Topic: {section_title}
 Prerequisites: {prereq_list}
 """
-        state["mode"] = "checking_prereq_familiarity"
+            state["mode"] = "checking_prereq_familiarity"
     else:
-        print(f"[answer_question] → TEACHING BRANCH (prereq_list empty={not prereq_list}, mode={state.get('mode')})")
         # Progressive sub-concept teaching mode
         current_subconcept_id = state.get("current_subconcept_id")
         
@@ -1002,7 +1117,6 @@ Subconcept: {subconcept_title}
 3. End with: "Let me check your understanding of this concept..."{suggestion}"""
     
     # Build messages for LLM
-    print(f"[answer_question] system_prompt starts with: {system_prompt[:200]}...")
     messages_for_llm = [SystemMessage(content=system_prompt)]
     for msg in state.get("messages", [])[-5:]:
         if hasattr(msg, 'content'):
@@ -1017,7 +1131,7 @@ Subconcept: {subconcept_title}
     # Mark current concept/subconcept as explained
     # IMPORTANT: Only mark as explained when we're actually TEACHING, not when asking about prerequisites
     current_mode = state.get("mode", "normal")
-    should_mark_explained = current_mode not in ["checking_prereq_familiarity", "asking_prereq", "evaluating_answer"]
+    should_mark_explained = current_mode == "normal"
     
     if user_id and should_mark_explained:
         try:
@@ -1252,6 +1366,7 @@ Prerequisites to explain: {prereq_titles}
 3. Relate each prerequisite back to why it's important for understanding {state.get('current_concept_title')}.
 4. If misconceptions are listed, explicitly correct them with a short contrast ("common mistake" vs "correct idea").
 5. After explaining, ask: "Does that make sense? Are you ready to continue with {state.get('current_concept_title')}?"
+6. **LaTeX formatting**: Use $x$ for inline math and $$equation$$ for display math. NEVER use \\(...\\) or \\[...\\] notation.
 """
 
     response = await llm.ainvoke([SystemMessage(content=system_prompt)])
@@ -1340,16 +1455,38 @@ def route_after_understand(state: TutorState) -> Literal["ask_prereq_question", 
             if comp.get("concept_id"):
                 competency_concept_ids.add(comp.get("concept_id"))
         
-        # Combine session-tested and competency-proven prereqs
-        already_proven = already_tested | competency_concept_ids
+        # Check if a prereq should be considered "proven" (using prefix match)
+        def is_prereq_proven(prereq_id: str) -> bool:
+            # Check if directly tested
+            if prereq_id in already_tested:
+                return True
+            # Check if competency exists for this prereq or its subconcepts
+            for cid in competency_concept_ids:
+                if cid == prereq_id or cid.startswith(prereq_id + "."):
+                    return True
+            return False
         
-        # Find risky prereqs that haven't been tested yet
-        risky_untested = (prereq_ids & risk_concepts) - already_proven
+        # Find risky prereqs using prefix matching
+        # A prereq is risky if ANY risk_concept is that prereq or its subconcept
+        risky_untested = set()
+        for prereq_id in prereq_ids:
+            if is_prereq_proven(prereq_id):
+                continue
+            # Check if this prereq overlaps with any risk_concept
+            for rc in risk_concepts:
+                if rc == prereq_id or rc.startswith(prereq_id + "."):
+                    risky_untested.add(prereq_id)
+                    break
         
         if risky_untested:
             print(f"[Context] Proactive prereq check: {risky_untested} are risky and untested")
-            state["mode"] = "needs_prereq_check"
-            return "ask_prereq_question"
+            state["mode"] = "offering_risky_choice"
+            # Keep deterministic ordering based on prerequisite list order.
+            ordered_risky = [p.get("id") for p in prereqs if p.get("id") in risky_untested]
+            state["risky_prereq_ids"] = ordered_risky
+            # Route through answer() so tutor first introduces the misconception
+            # and offers verify-or-skip choice before asking a question.
+            return "answer"
         
         return "answer"
 

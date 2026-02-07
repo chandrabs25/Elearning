@@ -14,13 +14,24 @@ async def clear_user_data():
     await neo4j_client.verify_connectivity()
     
     queries = [
-        # distinct delete for User and all related data
+        # Clear all user nodes and their relationships
         "MATCH (n:User) DETACH DELETE n",
         "MATCH (n:ChatMessage) DETACH DELETE n",
         "MATCH (n:Insight) DETACH DELETE n",
-        # Any other user-generated nodes?
         "MATCH (n:QuizAttempt) DETACH DELETE n", 
-        "MATCH (n:Interaction) DETACH DELETE n"
+        "MATCH (n:Interaction) DETACH DELETE n",
+        # Clear any TAUGHT relationships on SubConcept nodes
+        "MATCH ()-[r:TAUGHT]->() DELETE r",
+        # Clear any VERIFIED relationships
+        "MATCH ()-[r:VERIFIED]->() DELETE r",
+        # Clear any HAS_MISCONCEPTION relationships
+        "MATCH ()-[r:HAS_MISCONCEPTION]->() DELETE r",
+        # Clear any user learning progress relationships
+        "MATCH ()-[r:LEARNED]->() DELETE r",
+        "MATCH ()-[r:STRUGGLED_WITH]->() DELETE r",
+        # Clear LangGraph session/memory states (if stored in Neo4j)
+        "MATCH (n:MemoryCheckpoint) DETACH DELETE n",
+        "MATCH (n:SessionState) DETACH DELETE n",
     ]
     
     try:

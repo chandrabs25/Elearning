@@ -952,29 +952,37 @@ async def get_prerequisite_insights(user_id: str, concept_id: str) -> list[dict]
         section_id = '.'.join(concept_id.split('.')[:2])
     
     query = """
-    // Bind user once so prerequisite-insight fetch does not depend on TAUGHT existing.
+    // Bind user once and enumerate prerequisites for the current section.
     MATCH (u:User {id: $user_id})
-    MATCH (c:Concept {id: $section_id})-[:REQUIRES]->(prereq:Concept)
+    MATCH (:Concept {id: $section_id})-[:REQUIRES]->(prereq:Concept)
 
-    // TAUGHT status for prerequisite section node
-    OPTIONAL MATCH (u)-[:HAS_INSIGHT]->(taught:Insight {type: "TAUGHT"})-[:ABOUT]->(prereq)
-    WHERE taught.superseded_by IS NULL
-    WITH u, prereq, collect(DISTINCT taught) as taught_insights
+    // Compute TAUGHT status independently (for display only).
+    CALL {
+      WITH u, prereq
+      OPTIONAL MATCH (u)-[:HAS_INSIGHT]->(taught:Insight {type: "TAUGHT"})-[:ABOUT]->(taught_related:Concept)
+      WHERE taught.superseded_by IS NULL
+        AND (taught_related.id = prereq.id OR taught_related.id STARTS WITH prereq.id + ".")
+      RETURN collect(DISTINCT taught) as taught_insights
+    }
 
-    // All active insights for prerequisite and its subsections (object-level included)
-    OPTIONAL MATCH (u)-[:HAS_INSIGHT]->(insight:Insight)-[:ABOUT]->(related:Concept)
-    WHERE insight.superseded_by IS NULL
-      AND (related.id = prereq.id OR related.id STARTS WITH prereq.id + ".")
-      AND NONE(t IN taught_insights WHERE t IS NOT NULL AND insight.id = t.id)
-    WITH prereq, taught_insights,
-         collect(DISTINCT {
-             type: insight.type,
-             content: insight.content,
-             confidence: insight.confidence,
-             source_type: insight.source_type,
-             source_id: insight.source_id,
-             concept_id: related.id
-         }) as insights
+    // Fetch prerequisite insights independently of TAUGHT status.
+    // This includes misconceptions from prerequisite subsections and object-level
+    // exercise/quiz/mcq insights as long as they are ABOUT the prerequisite subtree.
+    CALL {
+      WITH u, prereq
+      OPTIONAL MATCH (u)-[:HAS_INSIGHT]->(insight:Insight)-[:ABOUT]->(related:Concept)
+      WHERE insight.superseded_by IS NULL
+        AND insight.type <> "TAUGHT"
+        AND (related.id = prereq.id OR related.id STARTS WITH prereq.id + ".")
+      RETURN collect(DISTINCT {
+               type: insight.type,
+               content: insight.content,
+               confidence: insight.confidence,
+               source_type: insight.source_type,
+               source_id: insight.source_id,
+               concept_id: related.id
+             }) as insights
+    }
 
     RETURN prereq.id as id,
            prereq.title as title,
